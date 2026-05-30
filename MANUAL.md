@@ -20,17 +20,25 @@ Funcoes atualmente disponiveis:
   - `File -> Exit`
   - `Setup -> Config UI`
   - `Help -> About`
+  - `Database -> Atualizar MSX RomDB`
+  - `Database -> Atualizar File-Hunter`
 - Configuracao de UI:
   - tema (`System`, `Light`, `Dark`)
   - fonte (familia)
   - tamanho da fonte
   - densidade de layout
+- Configuracao do SQLite:
+  - visualizacao do caminho atual do banco
+  - alternancia entre `data/msxdbdown.db` e pasta de configuracao do usuario
+  - mover banco atual ou criar novo banco zerado
 - Internacionalizacao (5 idiomas):
   - `pt`, `en`, `es`, `nl`, `it`
 - CLI com Cobra (`--help`, `version`, flags de inicializacao).
-- Persistencia em SQLite de configuracoes (`settings.db`).
+- Persistencia em SQLite de configuracoes (`msxdbdown.db`).
+- Download do MSX RomDB com descompactacao e importacao SQL para o SQLite atual.
+- Download do File-Hunter (`allfiles.txt` + `sha1sums.txt`).
 
-Versao atual do app: **0.0.3**.
+Versao atual do app: **0.1.7**.
 
 ---
 
@@ -143,7 +151,7 @@ O arquivo `build.ps1` encapsula build release/debug, alvos Windows/Linux, injeca
   Limpa pasta `dist` antes de compilar.
 
 - `-Version "X.Y.Z"`
-  Define versao injetada no binario (ex.: `0.0.3`).
+  Define versao injetada no binario (ex.: `0.1.7`).
 
 ### 5.2 Exemplos de uso do script
 
@@ -151,21 +159,21 @@ O arquivo `build.ps1` encapsula build release/debug, alvos Windows/Linux, injeca
 
 ```powershell
 Set-Location "C:\dos\msxdbdown"
-.\build.ps1 -Windows -Release -Version "0.0.3"
+.\build.ps1 -Windows -Release -Version "0.1.7"
 ```
 
 #### Debug Windows + executar comando `version`
 
 ```powershell
 Set-Location "C:\dos\msxdbdown"
-.\build.ps1 -Windows -DebugBuild -Version "0.0.3" -Run -RunArgs "version"
+.\build.ps1 -Windows -DebugBuild -Version "0.1.7" -Run -RunArgs "version"
 ```
 
 #### Build de todos os alvos
 
 ```powershell
 Set-Location "C:\dos\msxdbdown"
-.\build.ps1 -All -Release -Version "0.0.3"
+.\build.ps1 -All -Release -Version "0.1.7"
 ```
 
 #### Limpar artefatos
@@ -243,8 +251,11 @@ Configuracoes sao salvas em SQLite via pacote `internal/settingsdb`.
 
 ### 7.1 Local do banco
 
-- Pasta de configuracao do usuario (`UserConfigDir`) em subpasta `msxdbdown`
-- Arquivo: `settings.db`
+- Local: `data/msxdbdown.db`
+- Pasta de configuracao do usuario:
+  - Windows: `%APPDATA%/msxdbdown/msxdbdown.db`
+  - Linux: `~/.config/msxdbdown/msxdbdown.db`
+- A localizacao ativa pode ser alterada pela aba SQLite em `Setup -> Config UI`.
 
 ### 7.2 Chaves salvas
 
@@ -253,11 +264,16 @@ Configuracoes sao salvas em SQLite via pacote `internal/settingsdb`.
 - `ui.fontName`
 - `ui.fontSize`
 - `ui.density`
+- `db.msxromdb.url`
+- `db.filehunter.url`
+- `db.filehunter.sha.url`
+- `db.catalog.location`
 
 ### 7.3 Regras de inicializacao
 
 - Se idioma salvo existir: app inicia naquele idioma.
 - Se nao existir idioma no banco: app inicia em **English**.
+- Banco novo e inicializado com preferencias padrao.
 
 ---
 
@@ -269,10 +285,22 @@ Configuracoes sao salvas em SQLite via pacote `internal/settingsdb`.
 
 ### 8.2 Menu `Setup`
 
-- `Config UI`: abre dialogo para configurar tema/fonte/tamanho/densidade.
+- `Config UI`: abre dialogo em abas para configurar UI, URLs e SQLite.
 - Ao confirmar, as configuracoes sao persistidas no SQLite.
 
-### 8.3 Menu `Help`
+### 8.3 Menu `Database`
+
+- `Atualizar MSX RomDB`:
+  - baixa zip do dump SQL,
+  - descompacta em `download/`,
+  - importa SQL para o SQLite atual com refresh atomico por tabela,
+  - gera log detalhado e resumo final.
+- `Atualizar File-Hunter`:
+  - baixa `allfiles.txt` e `sha1sums.txt`.
+- `Limpar Downloads`:
+  - remove arquivos da pasta `download/`.
+
+### 8.4 Menu `Help`
 
 - `About`: abre dialogo com:
   - nome do app
@@ -281,9 +309,9 @@ Configuracoes sao salvas em SQLite via pacote `internal/settingsdb`.
   - copyrights
   - link clicavel para `https://www.cybernostra.com`
 
-### 8.4 Painel de log/status
+### 8.5 Painel de log/status
 
-- Registra eventos da app e mensagens de depuracao.
+- Registra eventos da app, downloads, importacoes SQL e mensagens de depuracao.
 
 ---
 
@@ -301,6 +329,7 @@ go test ./internal/uiprefs -v
 
 ```powershell
 Set-Location "C:\dos\msxdbdown"
+go test ./...
 go build ./...
 ```
 
@@ -313,7 +342,7 @@ go build ./...
 - `build.ps1` - automacao de build/run
 - `internal/about/about.go` - dialogo About
 - `internal/configui/configui.go` - dialogo Config UI
-- `internal/settingsdb/settingsdb.go` - SQLite de configuracoes
+- `internal/settingsdb/settingsdb.go` - SQLite de configuracoes + importacao SQL
 - `internal/uiprefs/uiprefs.go` - defaults e validacao de preferencias
 - `internal/uitheme/uitheme.go` - tema customizado
 - `README.md` - resumo rapido do projeto
@@ -325,11 +354,10 @@ go build ./...
 
 Ainda nao implementado nesta fase:
 
-- downloader das bases externas,
-- schema de catalogo (alem de settings),
+- schema consolidado do catalogo final alem das tabelas importadas,
 - matching/normalizacao de nomes,
 - enriquecimento de metadados externos,
-- launcher integrado com openMSX.
+- launcher integrado com openMSX,
+- barra de progresso detalhada para downloads/importacoes longas.
 
 Este manual cobre o estado funcional atual para build, execucao e continuidade do desenvolvimento.
-

@@ -15,7 +15,7 @@ import (
 // Show displays the About dialog with version and copyright information.
 //
 //   - parent: main application window
-//   - version: e.g. "0.0.3"
+//   - version: e.g. "0.1.7"
 //   - buildDate: military date, e.g. "29052026"
 //   - buildTime: military time, e.g. "1433"
 //   - buildNumber: hex timestamp, e.g. "67a4f8c2"

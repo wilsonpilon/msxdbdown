@@ -4,6 +4,50 @@ Todas as alteracoes relevantes deste projeto serao registradas neste arquivo.
 
 O formato e inspirado em Keep a Changelog, com versionamento semantico.
 
+## [0.1.7] - 2026-05-30
+
+### Added
+
+- Menu `Banco de Dados` expandido com fluxos ativos para:
+  - `Atualizar MSX RomDB`
+  - `Atualizar File-Hunter`
+  - `Limpar Downloads`
+- Importacao automatica do dump SQL do MSX RomDB para o SQLite atual da aplicacao.
+- Aba `SQLite` em `Setup -> Config UI` com:
+  - visualizacao do caminho atual do banco,
+  - selecao entre banco local e pasta de configuracao do usuario,
+  - criacao de banco inicial com defaults,
+  - opcao para mover banco atual ou criar novo banco zerado.
+- Logs detalhados por tabela durante a importacao SQL:
+  - backup criado,
+  - tabela recriada,
+  - backup removido,
+  - resumo final com contadores agregados.
+
+### Changed
+
+- Banco de configuracoes padrao/documentado passou a ser `msxdbdown.db`.
+- Localizacao do banco unificada para:
+  - `data/msxdbdown.db`
+  - `%APPDATA%/msxdbdown/msxdbdown.db` no Windows
+  - `~/.config/msxdbdown/msxdbdown.db` no Linux
+- Importacao do MSX RomDB evoluiu de simples insercao para refresh atomico por tabela.
+- Documentacao principal atualizada para refletir o estado funcional atual do projeto.
+
+### Fixed
+
+- Reimportacao do MSX RomDB nao duplica mais registros no refresh.
+- Janela de inconsistencia durante refresh de tabelas grandes reduzida com estrategia atomica por tabela.
+
+### Tests
+
+- Testes de `internal/settingsdb` expandidos para cobrir:
+  - defaults em banco novo,
+  - importacao SQL,
+  - refresh sem duplicacao,
+  - refresh atomico por tabela,
+  - logs detalhados e resumo final.
+
 ## [0.0.3] - 2026-05-29
 
 ### Added

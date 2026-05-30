@@ -1,34 +1,97 @@
 package settingsdb
 
 import (
+	"bufio"
 	"database/sql"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+
+	"msxdbdown/internal/uiprefs"
 
 	_ "modernc.org/sqlite"
 )
 
 const driverName = "sqlite"
 
+const (
+	LocationLocal   = "local"
+	LocationAppData = "appdata"
+)
+
 // Store persists app settings in a simple key/value SQLite table.
 type Store struct {
 	db *sql.DB
 }
 
-func OpenDefault() (*Store, error) {
-	cfgDir, err := os.UserConfigDir()
-	if err != nil || cfgDir == "" {
-		cfgDir = "."
+type ImportLogFunc func(message string)
+
+type importStats struct {
+	backupCreated   int
+	tablesRecreated int
+	backupsRemoved  int
+}
+
+func NormalizeLocation(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case LocationAppData:
+		return LocationAppData
+	default:
+		return LocationLocal
+	}
+}
+
+func ResolvePath(location string) (string, error) {
+	if NormalizeLocation(location) == LocationAppData {
+		cfgDir, err := os.UserConfigDir()
+		if err != nil || cfgDir == "" {
+			return "", fmt.Errorf("resolve config dir: %w", err)
+		}
+		return filepath.Join(cfgDir, "msxdbdown", "msxdbdown.db"), nil
+	}
+	return filepath.Join(".", "data", "msxdbdown.db"), nil
+}
+
+func DetectCurrentPath() (location string, dbPath string, err error) {
+	localPath, err := ResolvePath(LocationLocal)
+	if err != nil {
+		return "", "", err
+	}
+	localInfo, localErr := os.Stat(localPath)
+	if localErr != nil && !errors.Is(localErr, os.ErrNotExist) {
+		return "", "", fmt.Errorf("check local db: %w", localErr)
 	}
 
-	dir := filepath.Join(cfgDir, "msxdbdown")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return nil, fmt.Errorf("create config dir: %w", err)
+	appDataPath, err := ResolvePath(LocationAppData)
+	if err != nil {
+		return "", "", err
+	}
+	appInfo, appErr := os.Stat(appDataPath)
+	if appErr != nil && !errors.Is(appErr, os.ErrNotExist) {
+		return "", "", fmt.Errorf("check appdata db: %w", appErr)
 	}
 
-	return Open(filepath.Join(dir, "settings.db"))
+	if localErr == nil && appErr == nil {
+		if appInfo.ModTime().After(localInfo.ModTime()) {
+			return LocationAppData, appDataPath, nil
+		}
+		return LocationLocal, localPath, nil
+	}
+	if localErr == nil {
+		return LocationLocal, localPath, nil
+	}
+	if appErr == nil {
+		return LocationAppData, appDataPath, nil
+	}
+
+	legacyPath := filepath.Join(filepath.Dir(appDataPath), "settings.db")
+	if _, statErr := os.Stat(legacyPath); statErr == nil {
+		return LocationAppData, legacyPath, nil
+	}
+
+	return LocationLocal, localPath, nil
 }
 
 func Open(dbPath string) (*Store, error) {
@@ -42,8 +105,37 @@ func Open(dbPath string) (*Store, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	if err := s.initDefaults(); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 
 	return s, nil
+}
+
+func (s *Store) initDefaults() error {
+	if s == nil || s.db == nil {
+		return errors.New("nil store")
+	}
+
+	const defaults = `
+INSERT OR IGNORE INTO app_settings(key, value) VALUES
+('ui.language', 'en'),
+('ui.theme', 'System'),
+('ui.fontName', 'System'),
+('ui.fontSize', '14'),
+('ui.density', 'Normal'),
+('db.msxromdb.url', 'https://romdb.vampier.net/Archive/sql-msxromdb.zip'),
+('db.filehunter.url', 'https://download.file-hunter.com/allfiles.txt'),
+('db.filehunter.sha.url', 'https://download.file-hunter.com/sha1sums.txt'),
+('db.catalog.location', 'local');
+`
+
+	_, err := s.db.Exec(defaults)
+	if err != nil {
+		return fmt.Errorf("init defaults: %w", err)
+	}
+	return nil
 }
 
 func (s *Store) initSchema() error {
@@ -101,4 +193,360 @@ ON CONFLICT(key) DO UPDATE SET value = excluded.value
 		return fmt.Errorf("set %s: %w", key, err)
 	}
 	return nil
+}
+
+func ResetAtPath(dbPath string, location string) error {
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
+		return fmt.Errorf("create database directory: %w", err)
+	}
+
+	for _, candidate := range []string{dbPath, dbPath + "-wal", dbPath + "-shm"} {
+		if err := os.Remove(candidate); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("remove %s: %w", candidate, err)
+		}
+	}
+
+	store, err := Open(dbPath)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = store.Close() }()
+
+	if err := store.Set(uiprefs.PrefCatalogDBLocation, NormalizeLocation(location)); err != nil {
+		return fmt.Errorf("set db location: %w", err)
+	}
+	return nil
+}
+
+func MoveDatabaseFiles(sourcePath, targetPath string) error {
+	if sourcePath == targetPath {
+		return nil
+	}
+
+	if _, err := os.Stat(sourcePath); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("source database not found: %s", sourcePath)
+		}
+		return fmt.Errorf("check source database: %w", err)
+	}
+
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+		return fmt.Errorf("create target directory: %w", err)
+	}
+
+	for _, suffix := range []string{"", "-wal", "-shm"} {
+		from := sourcePath + suffix
+		to := targetPath + suffix
+		if err := moveFile(from, to); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func moveFile(from, to string) error {
+	content, err := os.ReadFile(from)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("read %s: %w", from, err)
+	}
+
+	if err := os.WriteFile(to, content, 0o644); err != nil {
+		return fmt.Errorf("write %s: %w", to, err)
+	}
+
+	if err := os.Remove(from); err != nil {
+		return fmt.Errorf("remove %s: %w", from, err)
+	}
+
+	return nil
+}
+
+// ImportSQLDump executes SQL statements from a dump file into the current store.
+// It ignores BEGIN/COMMIT directives from the dump and wraps execution in a
+// single SQLite transaction. CREATE TABLE statements are made idempotent.
+// When refresh is true, tables found in INSERT INTO statements are atomically
+// refreshed by backing up the current table, recreating it, importing new rows,
+// and removing the backup only after a successful transaction.
+func (s *Store) ImportSQLDump(sqlPath string, refresh bool, logf ImportLogFunc) (int, error) {
+	if s == nil || s.db == nil {
+		return 0, errors.New("nil store")
+	}
+
+	f, err := os.Open(sqlPath)
+	if err != nil {
+		return 0, fmt.Errorf("open sql dump %s: %w", sqlPath, err)
+	}
+	defer func() { _ = f.Close() }()
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, fmt.Errorf("begin import transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
+
+	var b strings.Builder
+	inBlockComment := false
+	insertedRows := 0
+	createStmts := map[string]string{}
+	backupTables := map[string]string{}
+	stats := &importStats{}
+
+	flushStatement := func() error {
+		stmt := strings.TrimSpace(b.String())
+		b.Reset()
+		if stmt == "" {
+			return nil
+		}
+
+		normalized := strings.ToUpper(strings.TrimSpace(stmt))
+		if normalized == "BEGIN;" || normalized == "COMMIT;" || normalized == "BEGIN" || normalized == "COMMIT" {
+			return nil
+		}
+
+		if strings.HasPrefix(normalized, "CREATE TABLE ") && !strings.Contains(normalized, "IF NOT EXISTS") {
+			stmt = strings.Replace(stmt, "CREATE TABLE ", "CREATE TABLE IF NOT EXISTS ", 1)
+			normalized = strings.ToUpper(strings.TrimSpace(stmt))
+		}
+
+		if strings.HasPrefix(normalized, "CREATE TABLE ") {
+			table := parseCreateTableTarget(stmt)
+			if table != "" {
+				createStmts[table] = stmt
+			}
+		}
+
+		if strings.HasPrefix(normalized, "INSERT INTO ") {
+			table := parseInsertTargetTable(stmt)
+			if refresh && table != "" {
+				if err := ensureRefreshTable(tx, table, createStmts[table], backupTables, stats, logf); err != nil {
+					return err
+				}
+			}
+		}
+
+		if _, err := tx.Exec(stmt); err != nil {
+			return fmt.Errorf("exec sql statement failed: %w", err)
+		}
+		if strings.HasPrefix(normalized, "INSERT INTO ") {
+			insertedRows++
+		}
+		return nil
+	}
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		trimmed := strings.TrimSpace(line)
+
+		if inBlockComment {
+			if strings.Contains(trimmed, "*/") {
+				inBlockComment = false
+			}
+			continue
+		}
+		if strings.HasPrefix(trimmed, "/*") {
+			if !strings.Contains(trimmed, "*/") {
+				inBlockComment = true
+			}
+			continue
+		}
+		if trimmed == "" || strings.HasPrefix(trimmed, "--") {
+			continue
+		}
+
+		b.WriteString(line)
+		b.WriteByte('\n')
+
+		if strings.HasSuffix(trimmed, ";") {
+			if err := flushStatement(); err != nil {
+				return 0, err
+			}
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return 0, fmt.Errorf("read sql dump: %w", err)
+	}
+	if err := flushStatement(); err != nil {
+		return 0, err
+	}
+
+	for _, backupTable := range backupTables {
+		if backupTable == "" {
+			continue
+		}
+		if _, err := tx.Exec(fmt.Sprintf("DROP TABLE IF EXISTS %s", quoteIdentifier(backupTable))); err != nil {
+			return 0, fmt.Errorf("drop backup table %s: %w", backupTable, err)
+		}
+		stats.backupsRemoved++
+		if logf != nil {
+			logf(fmt.Sprintf("backup removed: %s", backupTable))
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit import transaction: %w", err)
+	}
+	if logf != nil {
+		logf(fmt.Sprintf(
+			"summary: %d tables recreated, %d backups created, %d backups removed, %d insert statements executed",
+			stats.tablesRecreated,
+			stats.backupCreated,
+			stats.backupsRemoved,
+			insertedRows,
+		))
+	}
+
+	return insertedRows, nil
+}
+
+func ensureRefreshTable(tx *sql.Tx, table, createStmt string, backupTables map[string]string, stats *importStats, logf ImportLogFunc) error {
+	if _, prepared := backupTables[table]; prepared {
+		return nil
+	}
+
+	exists, err := tableExists(tx, table)
+	if err != nil {
+		return fmt.Errorf("check table %s existence: %w", table, err)
+	}
+	if !exists {
+		backupTables[table] = ""
+		return nil
+	}
+
+	backupTable := "__msxdb_backup_" + sanitizeIdentifier(table)
+	if _, err := tx.Exec(fmt.Sprintf("DROP TABLE IF EXISTS %s", quoteIdentifier(backupTable))); err != nil {
+		return fmt.Errorf("drop stale backup table %s: %w", backupTable, err)
+	}
+
+	if _, err := tx.Exec(fmt.Sprintf("ALTER TABLE %s RENAME TO %s", quoteIdentifier(table), quoteIdentifier(backupTable))); err != nil {
+		return fmt.Errorf("backup table %s: %w", table, err)
+	}
+	if stats != nil {
+		stats.backupCreated++
+	}
+	if logf != nil {
+		logf(fmt.Sprintf("backup created: %s -> %s", table, backupTable))
+	}
+
+	if createStmt != "" {
+		if _, err := tx.Exec(createStmt); err != nil {
+			return fmt.Errorf("recreate table %s: %w", table, err)
+		}
+		if stats != nil {
+			stats.tablesRecreated++
+		}
+		if logf != nil {
+			logf(fmt.Sprintf("table recreated from dump schema: %s", table))
+		}
+	} else {
+		// Fallback only used when dump does not include CREATE TABLE for this target.
+		if _, err := tx.Exec(fmt.Sprintf("CREATE TABLE %s AS SELECT * FROM %s WHERE 1=0", quoteIdentifier(table), quoteIdentifier(backupTable))); err != nil {
+			return fmt.Errorf("recreate table %s fallback: %w", table, err)
+		}
+		if stats != nil {
+			stats.tablesRecreated++
+		}
+		if logf != nil {
+			logf(fmt.Sprintf("table recreated from backup fallback: %s", table))
+		}
+	}
+
+	backupTables[table] = backupTable
+	return nil
+}
+
+func tableExists(tx *sql.Tx, table string) (bool, error) {
+	var count int
+	err := tx.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name = ?", table).Scan(&count)
+	if err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
+func quoteIdentifier(name string) string {
+	return "\"" + strings.ReplaceAll(name, "\"", "\"\"") + "\""
+}
+
+func sanitizeIdentifier(name string) string {
+	if name == "" {
+		return "unknown"
+	}
+
+	var b strings.Builder
+	b.Grow(len(name))
+	for _, r := range name {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' {
+			b.WriteRune(r)
+			continue
+		}
+		b.WriteByte('_')
+	}
+	return b.String()
+}
+
+func parseCreateTableTarget(stmt string) string {
+	t := strings.TrimSpace(strings.ReplaceAll(strings.ReplaceAll(stmt, "\n", " "), "\t", " "))
+	if t == "" {
+		return ""
+	}
+
+	upper := strings.ToUpper(t)
+	if !strings.HasPrefix(upper, "CREATE TABLE ") {
+		return ""
+	}
+
+	rest := strings.TrimSpace(t[len("CREATE TABLE "):])
+	restUpper := strings.ToUpper(rest)
+	if strings.HasPrefix(restUpper, "IF NOT EXISTS ") {
+		rest = strings.TrimSpace(rest[len("IF NOT EXISTS "):])
+	}
+	if rest == "" {
+		return ""
+	}
+
+	end := len(rest)
+	for i, r := range rest {
+		if r == ' ' || r == '(' {
+			end = i
+			break
+		}
+	}
+	table := strings.TrimSpace(rest[:end])
+	table = strings.Trim(table, "`\"")
+	return table
+}
+
+func parseInsertTargetTable(stmt string) string {
+	t := strings.TrimSpace(strings.ReplaceAll(strings.ReplaceAll(stmt, "\n", " "), "\t", " "))
+	if t == "" {
+		return ""
+	}
+
+	upper := strings.ToUpper(t)
+	if !strings.HasPrefix(upper, "INSERT INTO ") {
+		return ""
+	}
+
+	rest := strings.TrimSpace(t[len("INSERT INTO "):])
+	if rest == "" {
+		return ""
+	}
+
+	end := len(rest)
+	for i, r := range rest {
+		if r == ' ' || r == '(' {
+			end = i
+			break
+		}
+	}
+	table := strings.TrimSpace(rest[:end])
+	table = strings.Trim(table, "`\"")
+	return table
 }

@@ -95,3 +95,18 @@ func TestDensityOptionsCount(t *testing.T) {
 		t.Fatalf("expected 3 density options, got %d", len(DensityOptions()))
 	}
 }
+
+func TestReadURLUsesFallbackWhenEmpty(t *testing.T) {
+	got := ReadURL("   ", DefaultMSXRomDBURL)
+	if got != DefaultMSXRomDBURL {
+		t.Fatalf("expected fallback %q, got %q", DefaultMSXRomDBURL, got)
+	}
+}
+
+func TestReadURLUsesStoredValue(t *testing.T) {
+	want := "https://example.com/data.zip"
+	got := ReadURL("  "+want+"  ", DefaultMSXRomDBURL)
+	if got != want {
+		t.Fatalf("expected stored value %q, got %q", want, got)
+	}
+}

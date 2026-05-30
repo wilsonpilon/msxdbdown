@@ -36,6 +36,22 @@ func New(base fyne.Theme, fontSize float32, density, fontName string) *CustomThe
 
 // Color delegates to the base theme.
 func (t *CustomTheme) Color(name fyne.ThemeColorName, variant fyne.ThemeVariant) color.Color {
+	bg := toNRGBA(t.base.Color(theme.ColorNameBackground, variant))
+	isDarkBG := relativeLuma(bg) < 0.5
+
+	switch name {
+	case theme.ColorNameForeground, theme.ColorNamePlaceHolder, theme.ColorNameDisabled:
+		if isDarkBG {
+			return color.NRGBA{R: 0xF2, G: 0xF4, B: 0xF8, A: 0xFF}
+		}
+		return color.NRGBA{R: 0x12, G: 0x16, B: 0x1D, A: 0xFF}
+	case theme.ColorNameInputBackground:
+		if isDarkBG {
+			return color.NRGBA{R: 0x2A, G: 0x30, B: 0x39, A: 0xFF}
+		}
+		return color.NRGBA{R: 0xEE, G: 0xF1, B: 0xF6, A: 0xFF}
+	}
+
 	return t.base.Color(name, variant)
 }
 
@@ -93,4 +109,21 @@ func max32(a, b float32) float32 {
 		return a
 	}
 	return b
+}
+
+func toNRGBA(c color.Color) color.NRGBA {
+	if v, ok := c.(color.NRGBA); ok {
+		return v
+	}
+	r, g, b, a := c.RGBA()
+	return color.NRGBA{
+		R: uint8(r >> 8),
+		G: uint8(g >> 8),
+		B: uint8(b >> 8),
+		A: uint8(a >> 8),
+	}
+}
+
+func relativeLuma(c color.NRGBA) float64 {
+	return (0.2126*float64(c.R) + 0.7152*float64(c.G) + 0.0722*float64(c.B)) / 255.0
 }

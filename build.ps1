@@ -41,7 +41,7 @@
 .EXAMPLE
     .\build.ps1 -Windows -Release
     .\build.ps1 -Linux   -DebugBuild
-    .\build.ps1 -All     -Release  -Version "1.0.0"
+    .\build.ps1 -All     -Release  -Version "0.1.7"
     .\build.ps1 -Windows -Release  -Run  -RunArgs "--lang","en","--theme","dark"
     .\build.ps1 -Windows -DebugBuild    -Run  -RunArgs "version"
     .\build.ps1 -Clean

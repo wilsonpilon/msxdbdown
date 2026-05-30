@@ -5,6 +5,27 @@ import (
 	"strings"
 )
 
+const (
+	PrefMSXRomDBURL       = "db.msxromdb.url"
+	PrefFileHunterURL     = "db.filehunter.url"
+	PrefFileHunterSHAURL  = "db.filehunter.sha.url"
+	PrefCatalogDBLocation = "db.catalog.location"
+
+	DefaultMSXRomDBURL       = "https://romdb.vampier.net/Archive/sql-msxromdb.zip"
+	DefaultFileHunterURL     = "https://download.file-hunter.com/allfiles.txt"
+	DefaultFileHunterSHAURL  = "https://download.file-hunter.com/sha1sums.txt"
+	DefaultCatalogDBLocation = "local"
+)
+
+func ReadCatalogDBLocation(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "appdata":
+		return "appdata"
+	default:
+		return DefaultCatalogDBLocation
+	}
+}
+
 // ---------- language ----------------------------------------------------------
 
 type LanguageCode string
@@ -115,4 +136,12 @@ func ReadFontName(value string) string {
 		}
 	}
 	return DefaultFontName
+}
+
+func ReadURL(value, fallback string) string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return fallback
+	}
+	return trimmed
 }

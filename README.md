@@ -13,7 +13,7 @@ Frontend desktop para catalogo MSX, escrito em Go, com GUI em Fyne.
 
 ## Versao atual
 
-- **App version**: `0.0.3`
+- **App version**: `0.1.7`
 - **Build metadata**: injetado no build (`BuildDate`, `BuildTime`, `BuildNumber` em hexadecimal UTC)
 
 ## Ambientes e ferramentas usadas
@@ -45,9 +45,14 @@ Frontend desktop para catalogo MSX, escrito em Go, com GUI em Fyne.
   - `Setup -> Config UI`
   - `Help -> About`
 - Dialogo **Config UI**:
+  - abas para UI, URLs e SQLite
   - familia da fonte
   - tamanho da fonte
   - densidade do layout
+- Criacao/troca do banco SQLite de configuracoes:
+  - caminho atual do banco visivel na UI
+  - opcao entre `data/msxdbdown.db` e pasta de configuracao do usuario
+  - mover banco atual ou criar novo banco zerado
 - Dialogo **About** com:
   - versao, build, data/hora
   - copyrights
@@ -59,11 +64,20 @@ Frontend desktop para catalogo MSX, escrito em Go, com GUI em Fyne.
   - Nederlands (`nl`)
   - Italiano (`it`)
 - CLI com Cobra e help localizado por `--lang`
-- Persistencia de configuracoes em SQLite (`settings.db`):
+- Persistencia de configuracoes em SQLite (`msxdbdown.db`):
   - idioma
   - tema
   - fonte/tamanho
   - densidade
+- Download e importacao de banco externo:
+  - `Database -> Atualizar MSX RomDB`
+  - baixa `sql-msxromdb.zip`
+  - descompacta SQL em `download/`
+  - importa para o SQLite atual com refresh atomico por tabela
+  - log detalhado por tabela + resumo final da importacao
+- Download de File-Hunter:
+  - `Database -> Atualizar File-Hunter`
+  - baixa `allfiles.txt` e `sha1sums.txt`
 - Fallback de idioma na primeira execucao (sem valor salvo): **English**
 
 ## Estrutura principal
@@ -125,19 +139,19 @@ go build ./...
 
 ```powershell
 Set-Location "C:\dos\msxdbdown"
-.\build.ps1 -Windows -Release -Version "0.0.3"
+.\build.ps1 -Windows -Release -Version "0.1.7"
 ```
 
 ```powershell
 Set-Location "C:\dos\msxdbdown"
-.\build.ps1 -Windows -DebugBuild -Version "0.0.3" -Run -RunArgs "version"
+.\build.ps1 -Windows -DebugBuild -Version "0.1.7" -Run -RunArgs "version"
 ```
 
 ## Proximos passos (roadmap)
 
-1. Implementar downloader das duas fontes principais
-2. Definir schema SQLite para catalogo (alem de settings)
-3. Implementar matching/normalizacao de nomes entre bases
-4. Integrar coleta de metadados externos (imagem, video, musica etc.)
-5. Conectar catalogo visual ao launcher do openMSX
+1. Estruturar schema consolidado do catalogo final a partir das bases importadas
+2. Implementar matching/normalizacao de nomes entre bases
+3. Integrar coleta de metadados externos (imagem, video, musica etc.)
+4. Conectar catalogo visual ao launcher do openMSX
+5. Adicionar indicadores visuais de progresso para downloads/importacoes longas
 

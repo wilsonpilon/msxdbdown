@@ -6,7 +6,7 @@ Este arquivo resume o que foi pedido e implementado durante o chat, para outra I
 
 Criar um aplicativo desktop em Go para Windows/Linux, com GUI em Fyne, para:
 
-- baixar duas bases de dados de sites especificos,
+- baixar bases de dados de sites especificos,
 - consolidar em SQLite,
 - analisar nomes similares para padronizacao entre bases,
 - enriquecer com metadados externos (imagem, video, musica, lancamento, fabricante etc.),
@@ -14,7 +14,27 @@ Criar um aplicativo desktop em Go para Windows/Linux, com GUI em Fyne, para:
 
 ## 2) Escopo ja implementado
 
-A etapa atual foca no bootstrap da aplicacao (UI + CLI + build + persistencia de configuracoes).
+A etapa atual foca no bootstrap da aplicacao, configuracao persistente, downloads de bases e importacao inicial para SQLite.
+
+### 2.0 Database Download Menu
+
+Implementado em `main.go`:
+
+- Menu `Banco de Dados` com submenus:
+  - `Atualizar MSX RomDB` - baixa zip do dump SQL, descompacta e importa no SQLite atual
+  - `Atualizar File-Hunter` - baixa 2 arquivos (`allfiles.txt` + `sha1sums.txt`)
+  - `Limpar Downloads` - remove arquivos em `download/`
+- Tela de download mostrando URL(s) + botao `Atualizar`
+- Download com retry automatico (2 tentativas)
+- Fallback para URL default se campo vazio
+- Status com cores por severidade:
+  - INFO (azul): eventos normais
+  - WARN (ambar): retries, fallbacks de URL
+  - ERROR (vermelho): falhas finais
+- Importacao do MSX RomDB com:
+  - refresh atomico por tabela,
+  - logs detalhados por tabela,
+  - resumo final com contadores.
 
 ### 2.1 UI principal
 
@@ -26,9 +46,9 @@ Implementado em `main.go`:
   - painel de log/status para progresso/depuracao,
   - status bar inferior.
 - Menu principal:
-  - `File -> Exit` (funcional)
-  - `Setup -> Config UI` (funcional)
-  - `Help -> About` (funcional)
+  - `File -> Exit`
+  - `Setup -> Config UI`
+  - `Help -> About`
 - Troca de idioma em runtime (5 idiomas):
   - Portugues (`pt`)
   - English (`en`)
@@ -44,10 +64,17 @@ Implementado em `main.go`:
 
 Implementado em `internal/configui/configui.go`:
 
+- Dialogo paginado em abas:
+  - UI
+  - URLs
+  - SQLite
 - Configuracao de familia de fonte,
 - tamanho de fonte,
 - densidade de layout,
-- persistencia ao clicar Apply,
+- URLs de MSX RomDB e File-Hunter,
+- visualizacao do caminho atual do banco,
+- alternancia entre `data/msxdbdown.db` e pasta de configuracao do usuario,
+- opcao para mover banco atual ou criar novo banco zerado,
 - callback para reaplicar tema imediatamente.
 
 ### 2.3 Dialogo About
@@ -63,9 +90,7 @@ Implementado em `internal/about/about.go`:
 
 ### 2.4 Menu traduzido nas 5 linguas
 
-As chaves de menu foram traduzidas no i18n em `main.go`:
-
-- `menuFile`, `menuExit`, `menuSetup`, `menuConfigUI`, `menuHelp`, `menuAbout`
+As chaves de menu e telas foram traduzidas no i18n em `main.go`.
 
 ### 2.5 CLI com Cobra
 
@@ -77,8 +102,7 @@ Implementado em `main.go`:
   - `--lang`, `-l`
   - `--theme`, `-t`
   - `--debug`, `-d`
-- help do Cobra localizado conforme `--lang`:
-  - `Short`, `Long`, descricao de flags e `version short` traduzidos.
+- help do Cobra localizado conforme `--lang`.
 
 ## 3) Build / versionamento da build
 
@@ -93,6 +117,8 @@ Em `version.go`:
 
 Valores injetados via `-ldflags` no build.
 
+Versao atual do projeto: **0.1.7**.
+
 ### 3.2 Script de build
 
 Em `build.ps1`:
@@ -101,7 +127,7 @@ Em `build.ps1`:
 - perfil: `-Release` ou `-DebugBuild`
 - execucao opcional: `-Run -RunArgs ...`
 - limpeza: `-Clean`
-- versao: `-Version "0.0.3"`
+- versao: `-Version "0.1.7"`
 
 Build metadata:
 
@@ -109,16 +135,20 @@ Build metadata:
 - `BuildTime`: formato militar `HHmm` (UTC)
 - `BuildNumber`: timestamp UTC convertido para hexadecimal
 
-## 4) Persistencia em SQLite (pedido recente)
+## 4) Persistencia em SQLite
 
 ### 4.1 O que foi feito
 
-Foi adicionada uma camada SQLite para guardar configuracoes de UI e idioma:
+Foi adicionada uma camada SQLite para guardar configuracoes de UI, URLs e localizacao do banco:
 
-- novo pacote: `internal/settingsdb/settingsdb.go`
+- pacote: `internal/settingsdb/settingsdb.go`
 - driver: `modernc.org/sqlite` (pure Go)
-- banco: `settings.db` em `%UserConfigDir%/msxdbdown/` (ou equivalente do OS)
-- tabela:
+- banco principal atual: `msxdbdown.db`
+- localizacoes suportadas:
+  - `data/msxdbdown.db`
+  - `%APPDATA%/msxdbdown/msxdbdown.db` (Windows)
+  - `~/.config/msxdbdown/msxdbdown.db` (Linux)
+- tabela base de settings:
 
 ```sql
 CREATE TABLE IF NOT EXISTS app_settings (
@@ -129,36 +159,62 @@ CREATE TABLE IF NOT EXISTS app_settings (
 
 ### 4.2 Chaves salvas no SQLite
 
-- `ui.language` (ultima linguagem usada)
+- `ui.language`
 - `ui.theme`
 - `ui.fontName`
 - `ui.fontSize`
 - `ui.density`
+- `db.msxromdb.url`
+- `db.filehunter.url`
+- `db.filehunter.sha.url`
+- `db.catalog.location`
 
-### 4.3 Comportamento de idioma default
+### 4.3 Comportamento default
 
-- Se `ui.language` nao existir/for invalido no banco: default agora e `English` (`en`).
-- Isso foi ajustado em `internal/uiprefs/uiprefs.go` (`ReadLanguage`).
+- Se `ui.language` nao existir/for invalido: default = `English` (`en`).
+- Banco novo recebe preferencias padrao automaticamente.
 
 ### 4.4 Integracao com UI
 
 `main.go` foi alterado para:
 
-- abrir `settingsdb.OpenDefault()` no startup,
+- detectar o banco ativo no startup,
+- abrir o SQLite correto no startup,
 - usar callbacks `getSetting/setSetting` para leitura/escrita,
-- passar esses callbacks para `configui.Show(...)`,
+- passar callbacks extras para `configui.Show(...)`,
 - carregar e aplicar tema/fonte/densidade do SQLite em `applyAll()`,
-- persistir troca de idioma e tema no SQLite.
+- persistir troca de idioma e tema no SQLite,
+- trocar o banco ativo em runtime quando o usuario mudar a localizacao.
 
-## 5) Estrutura atual de pacotes internos
+## 5) Importacao do MSX RomDB
+
+Implementado em `internal/settingsdb/settingsdb.go` e integrado em `main.go`.
+
+Fluxo atual:
+
+1. Download de `sql-msxromdb.zip`
+2. Descompactacao do `.sql` em `download/`
+3. Importacao no SQLite atual
+4. Refresh atomico por tabela:
+   - backup da tabela existente,
+   - recriacao da tabela,
+   - insercao dos novos dados,
+   - remocao do backup apenas ao final com sucesso.
+5. Logs emitidos:
+   - backup criado,
+   - tabela recriada,
+   - backup removido,
+   - resumo final com contadores.
+
+## 6) Estrutura atual de pacotes internos
 
 - `internal/about/` - dialogo About
-- `internal/configui/` - dialogo Config UI
-- `internal/settingsdb/` - persistencia SQLite de settings
-- `internal/uiprefs/` - normalizacao/defaults de idioma/tema/fonte/densidade
-- `internal/uitheme/` - tema custom Fyne (base + overrides)
+- `internal/configui/` - dialogo Config UI com abas UI / URLs / SQLite
+- `internal/settingsdb/` - persistencia SQLite + importacao SQL
+- `internal/uiprefs/` - normalizacao/defaults de idioma/tema/fonte/densidade + URLs
+- `internal/uitheme/` - tema custom Fyne
 
-## 6) Dependencias principais
+## 7) Dependencias principais
 
 `go.mod` usa:
 
@@ -166,7 +222,7 @@ CREATE TABLE IF NOT EXISTS app_settings (
 - `github.com/spf13/cobra v1.10.2`
 - `modernc.org/sqlite v1.51.0`
 
-## 7) Testes existentes
+## 8) Testes existentes
 
 - `internal/uiprefs/uiprefs_test.go`
 - `internal/settingsdb/settingsdb_test.go`
@@ -174,25 +230,31 @@ CREATE TABLE IF NOT EXISTS app_settings (
 Cobrem:
 
 - defaults/validacao de idioma/tema/fonte/densidade,
-- set/get no SQLite e retorno vazio para chave inexistente.
+- URL fallback quando vazio,
+- set/get no SQLite e retorno vazio para chave inexistente,
+- seed de defaults em banco novo,
+- importacao SQL,
+- refresh sem duplicacao,
+- refresh atomico por tabela,
+- logs detalhados e resumo final.
 
-## 8) Comandos uteis
+## 9) Comandos uteis
 
-### 8.1 Rodar app
+### 9.1 Rodar app
 
 ```powershell
 Set-Location "C:\dos\msxdbdown"
 go run .
 ```
 
-### 8.2 Help da CLI em idioma especifico
+### 9.2 Help da CLI em idioma especifico
 
 ```powershell
 Set-Location "C:\dos\msxdbdown"
 go run . --lang pt --help
 ```
 
-### 8.3 Testes focados
+### 9.3 Testes focados
 
 ```powershell
 Set-Location "C:\dos\msxdbdown"
@@ -200,46 +262,43 @@ go test ./internal/settingsdb -v
 go test ./internal/uiprefs -v
 ```
 
-### 8.4 Build via script
+### 9.4 Build via script
 
 ```powershell
 Set-Location "C:\dos\msxdbdown"
-.\build.ps1 -Windows -Release -Version "0.0.3"
+.\build.ps1 -Windows -Release -Version "0.1.7"
 ```
 
 ```powershell
 Set-Location "C:\dos\msxdbdown"
-.\build.ps1 -Windows -DebugBuild -Version "0.0.3" -Run -RunArgs "version"
+.\build.ps1 -Windows -DebugBuild -Version "0.1.7" -Run -RunArgs "version"
 ```
 
-## 9) Historico resumido de decisoes relevantes
+## 10) Historico resumido de decisoes relevantes
 
-1. Inicialmente, configuracoes ficavam em `fyne.Preferences`.
-2. Foi migrado para SQLite para persistencia unificada de Setup/Config UI e idioma.
-3. Idioma default foi alterado para `English` quando nao houver valor no banco.
-4. O `About` passou por iteracoes visuais:
-   - layout mais largo/baixo,
-   - informacoes consolidadas por linha,
-   - link clicavel,
-   - ajustes de alinhamento/estilo.
-5. Menus e CLI help foram internacionalizados para 5 idiomas.
+1. Configuracoes sairam de `fyne.Preferences` para SQLite.
+2. Idioma default foi alterado para `English` quando nao houver valor no banco.
+3. O `Config UI` foi paginado em abas.
+4. O banco de configuracoes passou a poder ficar em pasta local ou pasta de configuracao do usuario.
+5. O MSX RomDB agora e importado para o SQLite da app.
+6. O refresh da importacao passou de `DELETE FROM` para estrategia atomica por tabela.
+7. A importacao ganhou logs por tabela e resumo agregado.
 
-## 10) Pendencias / proximos passos (nao implementados ainda)
+## 11) Pendencias / proximos passos
 
 Escopo macro original ainda pendente:
 
-- downloader das 2 fontes externas,
-- schema SQLite para dados de catalogo (alem de settings),
+- schema consolidado do catalogo final alem das tabelas importadas,
 - algoritmo de matching/normalizacao de nomes,
-- scraping/API para metadados (imagem/video/musica etc.),
-- tela de catalogo visual real (lista/cards/filtros/detalhes),
-- integracao launcher com emulador MSX.
+- scraping/API para metadados,
+- tela de catalogo visual real,
+- integracao launcher com emulador MSX,
+- barra de progresso em tempo real.
 
-## 11) Observacoes para outra IA/dev
+## 12) Observacoes para outra IA/dev
 
 - Priorize manter compatibilidade Windows + Linux.
-- Evite quebrar `build.ps1` (pipeline local ja usado).
+- Evite quebrar `build.ps1`.
 - Preservar internacionalizacao existente em `main.go`.
 - Ao tocar persistencia de settings, manter fallback robusto para defaults.
-- Se evoluir banco principal de catalogo, mantenha `settings.db` separado (ou migre com cuidado).
-
+- Ao mexer na importacao SQL, preservar a estrategia atomica por tabela.
