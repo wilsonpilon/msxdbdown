@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -428,6 +429,9 @@ func ResetAtPath(dbPath string, location string) error {
 	return nil
 }
 
+// MoveDatabaseFiles moves sourcePath (and the companion -wal/-shm files when
+// present) to targetPath.  On failure it rolls back every file it already
+// moved so the caller can safely reopen the original path.
 func MoveDatabaseFiles(sourcePath, targetPath string) error {
 	if sourcePath == targetPath {
 		return nil
@@ -444,32 +448,80 @@ func MoveDatabaseFiles(sourcePath, targetPath string) error {
 		return fmt.Errorf("create target directory: %w", err)
 	}
 
-	for _, suffix := range []string{"", "-wal", "-shm"} {
+	suffixes := []string{"", "-wal", "-shm"}
+	moved := make([]string, 0, len(suffixes))
+
+	for _, suffix := range suffixes {
 		from := sourcePath + suffix
 		to := targetPath + suffix
-		if err := moveFile(from, to); err != nil {
-			return err
+
+		// Skip companion files that do not exist.
+		if _, err := os.Stat(from); errors.Is(err, os.ErrNotExist) {
+			continue
 		}
+
+		if err := moveFile(from, to); err != nil {
+			// Rollback: reverse every file we already moved, best-effort.
+			for i := len(moved) - 1; i >= 0; i-- {
+				s := moved[i]
+				_ = moveFile(targetPath+s, sourcePath+s)
+			}
+			return fmt.Errorf("move %s: %w", filepath.Base(from), err)
+		}
+		moved = append(moved, suffix)
 	}
 
 	return nil
 }
 
+// moveFile moves a single file from → to.
+// It tries an atomic os.Rename first (fast path, same filesystem).
+// When that fails (e.g. cross-device), it falls back to streaming copy into a
+// temporary file, an atomic rename of the temp file to the final destination,
+// and then removal of the source.
 func moveFile(from, to string) error {
-	content, err := os.ReadFile(from)
+	// Fast path: atomic rename (works on the same filesystem / volume).
+	if err := os.Rename(from, to); err == nil {
+		return nil
+	}
+
+	// Slow path: cross-device move – copy to a sibling temp file first so
+	// that the final rename step is still atomic.
+	tmpPath := to + ".part"
+
+	src, err := os.Open(from)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil
-		}
-		return fmt.Errorf("read %s: %w", from, err)
+		return fmt.Errorf("open source %s: %w", from, err)
 	}
 
-	if err := os.WriteFile(to, content, 0o644); err != nil {
-		return fmt.Errorf("write %s: %w", to, err)
+	dst, err := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	if err != nil {
+		_ = src.Close()
+		return fmt.Errorf("create temp %s: %w", tmpPath, err)
 	}
 
+	_, copyErr := io.Copy(dst, src)
+	_ = src.Close()
+	closeErr := dst.Close()
+
+	if copyErr != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("copy %s: %w", from, copyErr)
+	}
+	if closeErr != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("close temp %s: %w", tmpPath, closeErr)
+	}
+
+	// Atomically promote the temp file to the final destination.
+	if err := os.Rename(tmpPath, to); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("finalize %s: %w", to, err)
+	}
+
+	// Remove the source only after the destination is confirmed written.
 	if err := os.Remove(from); err != nil {
-		return fmt.Errorf("remove %s: %w", from, err)
+		return fmt.Errorf("remove source %s: %w", from, err)
 	}
 
 	return nil
@@ -502,7 +554,6 @@ func (s *Store) ImportSQLDump(sqlPath string, refresh bool, logf ImportLogFunc) 
 	scanner.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
 
 	var b strings.Builder
-	inBlockComment := false
 	insertedRows := 0
 	createStmts := map[string]string{}
 	backupTables := map[string]string{}
@@ -553,33 +604,102 @@ func (s *Store) ImportSQLDump(sqlPath string, refresh bool, logf ImportLogFunc) 
 		return nil
 	}
 
+	// sqlParseState tracks the lexer position within the SQL script so that
+	// statement boundaries (';') are recognised correctly even when they
+	// appear inside string literals, quoted identifiers or comments.
+	type sqlParseState uint8
+	const (
+		stNormal       sqlParseState = iota
+		stSingleQuote                // inside '...'
+		stDoubleQuote                // inside "..."
+		stBacktick                   // inside `...`
+		stLineComment                // after -- (ends at newline)
+		stBlockComment               // inside /* ... */
+	)
+	st := stNormal
+
 	for scanner.Scan() {
 		line := scanner.Text()
-		trimmed := strings.TrimSpace(line)
+		for i := 0; i < len(line); i++ {
+			ch := line[i]
+			switch st {
+			case stNormal:
+				switch ch {
+				case '-':
+					if i+1 < len(line) && line[i+1] == '-' {
+						st = stLineComment
+						i++ // skip second '-'
+					} else {
+						b.WriteByte(ch)
+					}
+				case '/':
+					if i+1 < len(line) && line[i+1] == '*' {
+						st = stBlockComment
+						i++ // skip '*'
+					} else {
+						b.WriteByte(ch)
+					}
+				case '\'':
+					st = stSingleQuote
+					b.WriteByte(ch)
+				case '"':
+					st = stDoubleQuote
+					b.WriteByte(ch)
+				case '`':
+					st = stBacktick
+					b.WriteByte(ch)
+				case ';':
+					if err := flushStatement(); err != nil {
+						return 0, err
+					}
+				default:
+					b.WriteByte(ch)
+				}
 
-		if inBlockComment {
-			if strings.Contains(trimmed, "*/") {
-				inBlockComment = false
-			}
-			continue
-		}
-		if strings.HasPrefix(trimmed, "/*") {
-			if !strings.Contains(trimmed, "*/") {
-				inBlockComment = true
-			}
-			continue
-		}
-		if trimmed == "" || strings.HasPrefix(trimmed, "--") {
-			continue
-		}
+			case stSingleQuote:
+				b.WriteByte(ch)
+				if ch == '\'' {
+					if i+1 < len(line) && line[i+1] == '\'' {
+						b.WriteByte(line[i+1]) // escaped quote: ''
+						i++
+					} else {
+						st = stNormal
+					}
+				}
 
-		b.WriteString(line)
-		b.WriteByte('\n')
+			case stDoubleQuote:
+				b.WriteByte(ch)
+				if ch == '"' {
+					if i+1 < len(line) && line[i+1] == '"' {
+						b.WriteByte(line[i+1]) // escaped quote: ""
+						i++
+					} else {
+						st = stNormal
+					}
+				}
 
-		if strings.HasSuffix(trimmed, ";") {
-			if err := flushStatement(); err != nil {
-				return 0, err
+			case stBacktick:
+				b.WriteByte(ch)
+				if ch == '`' {
+					st = stNormal
+				}
+
+			case stLineComment, stBlockComment:
+				if st == stBlockComment && ch == '*' && i+1 < len(line) && line[i+1] == '/' {
+					st = stNormal
+					i++ // skip '/'
+				}
+				// skip comment content
 			}
+		}
+		// End of line: line comments terminate at newline.
+		// Preserve the newline in the statement buffer unless we are inside
+		// a block comment (where all content is discarded).
+		if st == stLineComment {
+			st = stNormal
+		}
+		if st != stBlockComment {
+			b.WriteByte('\n')
 		}
 	}
 	if err := scanner.Err(); err != nil {

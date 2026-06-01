@@ -39,6 +39,10 @@ const (
 	prefLanguage = "ui.language"
 	prefTheme    = "ui.theme"
 
+	maxLogLines         = 1500
+	browsePageSize      = 100
+	browseDebounceDelay = 300 * time.Millisecond
+
 	viewCatalogPlaceholder = "catalog"
 	viewMSXRomDBUpdate     = "db.msxromdb"
 	viewMSXRomDBBrowse     = "db.msxromdb.browse"
@@ -163,6 +167,9 @@ var i18n = map[uiprefs.LanguageCode]map[string]string{
 		"dbBrowseVersionNone":         "(nenhum)",
 		"dbBrowseSHA1Copied":          "SHA1 copiado para a area de transferencia",
 		"dbBrowseSHA1Empty":           "Esta versao nao possui SHA1 para copiar",
+		"pagerPrev":                   "Anterior",
+		"pagerNext":                   "Próxima",
+		"pagerCurrent":                "Página %d/%d",
 		"menuCleanDownloads":          "Limpar Downloads",
 		"cleanDownloadsTitle":         "Limpar Downloads",
 		"cleanDownloadsLabel":         "Arquivos em download/:",
@@ -298,6 +305,9 @@ var i18n = map[uiprefs.LanguageCode]map[string]string{
 		"dbBrowseVersionNone":         "(none)",
 		"dbBrowseSHA1Copied":          "SHA1 copied to clipboard",
 		"dbBrowseSHA1Empty":           "This version has no SHA1 to copy",
+		"pagerPrev":                   "Prev",
+		"pagerNext":                   "Next",
+		"pagerCurrent":                "Page %d/%d",
 		"menuCleanDownloads":          "Clean Downloads",
 		"cleanDownloadsTitle":         "Clean Downloads",
 		"cleanDownloadsLabel":         "Files in download/:",
@@ -360,6 +370,9 @@ var i18n = map[uiprefs.LanguageCode]map[string]string{
 		"dbExtractStarted":       "Extrayendo archivo en download/ ...",
 		"dbExtractDone":          "Extracción completada",
 		"dbExtractFailed":        "Fallo al extraer archivo",
+		"pagerPrev":              "Anterior",
+		"pagerNext":              "Siguiente",
+		"pagerCurrent":           "Página %d/%d",
 		"cleanDownloadsTitle":    "Limpiar Descargas",
 		"cleanDownloadsLabel":    "Archivos en descargas/:",
 		"cleanDownloadsButton":   "Limpiar",
@@ -421,6 +434,9 @@ var i18n = map[uiprefs.LanguageCode]map[string]string{
 		"dbExtractStarted":       "Bestand uitpakken naar download/ ...",
 		"dbExtractDone":          "Uitpakken voltooid",
 		"dbExtractFailed":        "Uitpakken mislukt",
+		"pagerPrev":              "Vorige",
+		"pagerNext":              "Volgende",
+		"pagerCurrent":           "Pagina %d/%d",
 		"cleanDownloadsTitle":    "Downloads wissen",
 		"cleanDownloadsLabel":    "Bestanden in downloads/:",
 		"cleanDownloadsButton":   "Wissen",
@@ -482,6 +498,9 @@ var i18n = map[uiprefs.LanguageCode]map[string]string{
 		"dbExtractStarted":       "Estrazione file in download/ ...",
 		"dbExtractDone":          "Estrazione completata",
 		"dbExtractFailed":        "Estrazione non riuscita",
+		"pagerPrev":              "Precedente",
+		"pagerNext":              "Successiva",
+		"pagerCurrent":           "Pagina %d/%d",
 		"cleanDownloadsTitle":    "Pulisci Download",
 		"cleanDownloadsLabel":    "File in download/:",
 		"cleanDownloadsButton":   "Pulisci",
@@ -829,6 +848,7 @@ func (ui *mainUI) showMSXRomDBBrowseView() {
 	searchEntry := widget.NewEntry()
 	searchEntry.SetPlaceHolder(ui.t("dbBrowseSearchPlaceholder"))
 	resultsLabel := widget.NewLabel(fmt.Sprintf(ui.t("dbBrowseResults"), 0))
+	pageLabel := widget.NewLabel(fmt.Sprintf(ui.t("pagerCurrent"), 1, 1))
 
 	headers := []string{
 		ui.t("dbBrowseColName"),
@@ -837,11 +857,36 @@ func (ui *mainUI) showMSXRomDBBrowseView() {
 		ui.t("dbBrowseColCompany"),
 	}
 	rows := []settingsdb.RomInfoSearchRow{}
+	currentPage := 0
 	sortCol := -1
 	sortAsc := true
 	selectedRow := -1
 	lastSelectedRow := -1
 	var lastSelectedAt time.Time
+	var searchDebounce *time.Timer
+
+	totalPages := func() int {
+		if len(rows) == 0 {
+			return 1
+		}
+		return (len(rows)-1)/browsePageSize + 1
+	}
+
+	visibleRows := func() []settingsdb.RomInfoSearchRow {
+		if len(rows) == 0 {
+			return nil
+		}
+		start := currentPage * browsePageSize
+		if start >= len(rows) {
+			start = 0
+			currentPage = 0
+		}
+		end := start + browsePageSize
+		if end > len(rows) {
+			end = len(rows)
+		}
+		return rows[start:end]
+	}
 
 	openDetails := func() {
 		if selectedRow < 0 || selectedRow >= len(rows) {
@@ -893,8 +938,48 @@ func (ui *mainUI) showMSXRomDBBrowseView() {
 		})
 	}
 
-	resultTable := widget.NewTable(
-		func() (int, int) { return len(rows) + 1, len(headers) },
+	var resultTable *widget.Table
+	var prevPageBtn *widget.Button
+	var nextPageBtn *widget.Button
+
+	updatePagingUI := func() {
+		pages := totalPages()
+		if currentPage < 0 {
+			currentPage = 0
+		}
+		if currentPage >= pages {
+			currentPage = pages - 1
+		}
+		if currentPage < 0 {
+			currentPage = 0
+		}
+		pageLabel.SetText(fmt.Sprintf(ui.t("pagerCurrent"), currentPage+1, pages))
+		if prevPageBtn != nil {
+			if currentPage == 0 {
+				prevPageBtn.Disable()
+			} else {
+				prevPageBtn.Enable()
+			}
+		}
+		if nextPageBtn != nil {
+			if currentPage >= pages-1 {
+				nextPageBtn.Disable()
+			} else {
+				nextPageBtn.Enable()
+			}
+		}
+		if resultTable != nil {
+			resultTable.Refresh()
+		}
+	}
+
+	resultTable = widget.NewTable(
+		func() (int, int) {
+			if len(rows) == 0 {
+				return 2, len(headers)
+			}
+			return len(visibleRows()) + 1, len(headers)
+		},
 		func() fyne.CanvasObject {
 			txt := canvas.NewText("", color.Black)
 			txt.TextSize = theme.TextSize()
@@ -921,7 +1006,13 @@ func (ui *mainUI) showMSXRomDBBrowseView() {
 				txt.Refresh()
 				return
 			}
-			r := rows[id.Row-1]
+			vis := visibleRows()
+			if id.Row-1 < 0 || id.Row-1 >= len(vis) {
+				txt.Text = ""
+				txt.Refresh()
+				return
+			}
+			r := vis[id.Row-1]
 			switch id.Col {
 			case 0:
 				txt.Text = r.GameName
@@ -949,21 +1040,31 @@ func (ui *mainUI) showMSXRomDBBrowseView() {
 				sortAsc = true
 			}
 			sortRows()
-			resultTable.Refresh()
+			selectedRow = -1
+			updatePagingUI()
+			return
+		}
+		vis := visibleRows()
+		if len(vis) == 0 {
 			return
 		}
 		now := time.Now()
-		newRow := id.Row - 1
-		wasSelected := (selectedRow == newRow) && (lastSelectedRow == newRow)
-		selectedRow = newRow
+		localIdx := id.Row - 1
+		if localIdx < 0 || localIdx >= len(vis) {
+			return
+		}
+		globalIdx := currentPage*browsePageSize + localIdx
+		wasSelected := (selectedRow == globalIdx) && (lastSelectedRow == globalIdx)
+		selectedRow = globalIdx
 		if wasSelected && now.Sub(lastSelectedAt) < 400*time.Millisecond {
 			openDetails()
 		}
-		lastSelectedRow = newRow
+		lastSelectedRow = globalIdx
 		lastSelectedAt = now
 	}
 
-	doSearch := func() {
+	var doSearch func()
+	doSearch = func() {
 		query := strings.TrimSpace(searchEntry.Text)
 		results, err := ui.store.SearchRomInfoByName(query, 500)
 		if err != nil {
@@ -971,23 +1072,55 @@ func (ui *mainUI) showMSXRomDBBrowseView() {
 			return
 		}
 		rows = results
+		currentPage = 0
 		sortCol = -1
 		sortAsc = true
 		selectedRow = -1
-		resultTable.Refresh()
 		resultsLabel.SetText(fmt.Sprintf(ui.t("dbBrowseResults"), len(rows)))
+		updatePagingUI()
 	}
+
+	scheduleDebouncedSearch := func() {
+		if searchDebounce != nil {
+			searchDebounce.Stop()
+		}
+		searchDebounce = time.AfterFunc(browseDebounceDelay, func() {
+			fyne.Do(func() {
+				if ui.activeView != viewMSXRomDBBrowse {
+					return
+				}
+				doSearch()
+			})
+		})
+	}
+
+	prevPageBtn = widget.NewButton(ui.t("pagerPrev"), func() {
+		if currentPage > 0 {
+			currentPage--
+			selectedRow = -1
+			updatePagingUI()
+		}
+	})
+	nextPageBtn = widget.NewButton(ui.t("pagerNext"), func() {
+		if currentPage < totalPages()-1 {
+			currentPage++
+			selectedRow = -1
+			updatePagingUI()
+		}
+	})
 
 	searchBtn := widget.NewButton(ui.t("dbBrowseSearch"), func() { doSearch() })
 	openDetailsBtn := widget.NewButton(ui.t("dbBrowseOpenDetails"), func() { openDetails() })
 	searchEntry.OnSubmitted = func(_ string) { doSearch() }
+	searchEntry.OnChanged = func(string) { scheduleDebouncedSearch() }
 
 	hint := widget.NewLabelWithStyle(ui.t("dbBrowseDoubleClickHint"), fyne.TextAlignLeading, fyne.TextStyle{Italic: true})
 
 	searchRow := container.NewBorder(nil, nil, nil,
-		container.NewHBox(searchBtn, openDetailsBtn, resultsLabel),
+		container.NewHBox(searchBtn, openDetailsBtn, prevPageBtn, nextPageBtn, pageLabel, resultsLabel),
 		searchEntry,
 	)
+	updatePagingUI()
 
 	ui.previewCard.Title = ui.t("menuBrowseMSXRomDB")
 	ui.previewCard.SetContent(container.NewPadded(container.NewBorder(
@@ -1230,54 +1363,71 @@ func (ui *mainUI) showMSXRomDBUpdateView() {
 	urlLabel := widget.NewLabel(romURL)
 	urlLabel.Wrapping = fyne.TextWrapWord
 
-	updateBtn := widget.NewButton(ui.t("dbUpdateButton"), func() {
+	var updateBtn *widget.Button
+	updateBtn = widget.NewButton(ui.t("dbUpdateButton"), func() {
 		romURL = ui.resolveURLSetting(uiprefs.PrefMSXRomDBURL, uiprefs.DefaultMSXRomDBURL, "MSX RomDB")
-		ui.appendLog(statusInfo, "DB", ui.t("dbDownloadStarted"))
-		savedPath, err := ui.downloadSingleFile(romURL)
-		if err != nil {
-			ui.appendLog(statusError, "DB", fmt.Sprintf("%s: %v", ui.t("dbDownloadFailed"), err))
-			dialog.ShowError(err, ui.window)
-			return
-		}
-		ui.appendLog(statusInfo, "DB", fmt.Sprintf("%s: %s", ui.t("dbDownloadDone"), savedPath))
+		downloadStarted := ui.t("dbDownloadStarted")
+		downloadFailed := ui.t("dbDownloadFailed")
+		downloadDone := ui.t("dbDownloadDone")
+		extractStarted := ui.t("dbExtractStarted")
+		extractFailed := ui.t("dbExtractFailed")
+		extractDone := ui.t("dbExtractDone")
+		importStarted := ui.t("dbImportStarted")
+		importFailed := ui.t("dbImportFailed")
+		importDone := ui.t("dbImportDone")
+		importSQLNotFound := ui.t("dbImportSQLNotFound")
 
-		ui.appendLog(statusInfo, "DB", ui.t("dbExtractStarted"))
-		extractedPaths, err := extractZipFlat(savedPath, filepath.Join(".", "download"))
-		if err != nil {
-			ui.appendLog(statusError, "DB", fmt.Sprintf("%s: %v", ui.t("dbExtractFailed"), err))
-			dialog.ShowError(err, ui.window)
-			return
-		}
-		ui.appendLog(statusInfo, "DB", fmt.Sprintf("%s: %s", ui.t("dbExtractDone"), strings.Join(extractedPaths, ", ")))
+		updateBtn.Disable()
+		go func(downloadURL string) {
+			defer fyne.Do(func() { updateBtn.Enable() })
 
-		sqlDumpPath := ""
-		for _, extractedPath := range extractedPaths {
-			name := strings.ToLower(filepath.Base(extractedPath))
-			if name == "sql-msxromdb.sql" || name == "sql-romdb.sql" {
-				sqlDumpPath = extractedPath
-				break
+			ui.appendLogAsync(statusInfo, "DB", downloadStarted)
+			savedPath, err := ui.downloadSingleFile(downloadURL)
+			if err != nil {
+				ui.appendLogAsync(statusError, "DB", fmt.Sprintf("%s: %v", downloadFailed, err))
+				fyne.Do(func() { dialog.ShowError(err, ui.window) })
+				return
 			}
-			if sqlDumpPath == "" && strings.HasSuffix(name, ".sql") {
-				sqlDumpPath = extractedPath
-			}
-		}
-		if sqlDumpPath == "" {
-			err := errors.New(ui.t("dbImportSQLNotFound"))
-			ui.appendLog(statusError, "DB", err.Error())
-			dialog.ShowError(err, ui.window)
-			return
-		}
+			ui.appendLogAsync(statusInfo, "DB", fmt.Sprintf("%s: %s", downloadDone, savedPath))
 
-		ui.appendLog(statusInfo, "DB", ui.t("dbImportStarted"))
-		insertCount, err := ui.store.ImportSQLDump(sqlDumpPath, true, func(message string) {
-			ui.appendLog(statusInfo, "DB", "Import: "+message)
-		})
-		if err != nil {
-			ui.appendLog(statusError, "DB", fmt.Sprintf("%s: %v", ui.t("dbImportFailed"), err))
-			dialog.ShowError(err, ui.window)
-			return
-		}
-		ui.appendLog(statusInfo, "DB", fmt.Sprintf("%s (%d): %s", ui.t("dbImportDone"), insertCount, sqlDumpPath))
+			ui.appendLogAsync(statusInfo, "DB", extractStarted)
+			extractedPaths, err := extractZipFlat(savedPath, filepath.Join(".", "download"))
+			if err != nil {
+				ui.appendLogAsync(statusError, "DB", fmt.Sprintf("%s: %v", extractFailed, err))
+				fyne.Do(func() { dialog.ShowError(err, ui.window) })
+				return
+			}
+			ui.appendLogAsync(statusInfo, "DB", fmt.Sprintf("%s: %s", extractDone, strings.Join(extractedPaths, ", ")))
+
+			sqlDumpPath := ""
+			for _, extractedPath := range extractedPaths {
+				name := strings.ToLower(filepath.Base(extractedPath))
+				if name == "sql-msxromdb.sql" || name == "sql-romdb.sql" {
+					sqlDumpPath = extractedPath
+					break
+				}
+				if sqlDumpPath == "" && strings.HasSuffix(name, ".sql") {
+					sqlDumpPath = extractedPath
+				}
+			}
+			if sqlDumpPath == "" {
+				err := errors.New(importSQLNotFound)
+				ui.appendLogAsync(statusError, "DB", err.Error())
+				fyne.Do(func() { dialog.ShowError(err, ui.window) })
+				return
+			}
+
+			ui.appendLogAsync(statusInfo, "DB", importStarted)
+			insertCount, err := ui.store.ImportSQLDump(sqlDumpPath, true, func(message string) {
+				ui.appendLogAsync(statusInfo, "DB", "Import: "+message)
+			})
+			if err != nil {
+				ui.appendLogAsync(statusError, "DB", fmt.Sprintf("%s: %v", importFailed, err))
+				fyne.Do(func() { dialog.ShowError(err, ui.window) })
+				return
+			}
+			ui.appendLogAsync(statusInfo, "DB", fmt.Sprintf("%s (%d): %s", importDone, insertCount, sqlDumpPath))
+		}(romURL)
 	})
 
 	content := container.NewVBox(
@@ -1302,26 +1452,36 @@ func (ui *mainUI) showFileHunterUpdateView() {
 	shaLabel := widget.NewLabel(fileHunterSHAURL)
 	shaLabel.Wrapping = fyne.TextWrapWord
 
-	updateBtn := widget.NewButton(ui.t("dbUpdateButton"), func() {
+	var updateBtn *widget.Button
+	updateBtn = widget.NewButton(ui.t("dbUpdateButton"), func() {
 		fileHunterURL = ui.resolveURLSetting(uiprefs.PrefFileHunterURL, uiprefs.DefaultFileHunterURL, "File-Hunter")
 		fileHunterSHAURL = ui.resolveURLSetting(uiprefs.PrefFileHunterSHAURL, uiprefs.DefaultFileHunterSHAURL, "File-Hunter SHA")
-		ui.appendLog(statusInfo, "DB", ui.t("dbDownloadStarted"))
+		downloadStarted := ui.t("dbDownloadStarted")
+		downloadFailed := ui.t("dbDownloadFailed")
+		downloadDone := ui.t("dbDownloadDone")
 
-		allFilesPath, err := ui.downloadSingleFile(fileHunterURL)
-		if err != nil {
-			ui.appendLog(statusError, "DB", fmt.Sprintf("%s: %v", ui.t("dbDownloadFailed"), err))
-			dialog.ShowError(err, ui.window)
-			return
-		}
+		updateBtn.Disable()
+		go func(allFilesURL, shaURL string) {
+			defer fyne.Do(func() { updateBtn.Enable() })
 
-		shaPath, err := ui.downloadSingleFile(fileHunterSHAURL)
-		if err != nil {
-			ui.appendLog(statusError, "DB", fmt.Sprintf("%s: %v", ui.t("dbDownloadFailed"), err))
-			dialog.ShowError(err, ui.window)
-			return
-		}
+			ui.appendLogAsync(statusInfo, "DB", downloadStarted)
 
-		ui.appendLog(statusInfo, "DB", fmt.Sprintf("%s: %s, %s", ui.t("dbDownloadDone"), allFilesPath, shaPath))
+			allFilesPath, err := ui.downloadSingleFile(allFilesURL)
+			if err != nil {
+				ui.appendLogAsync(statusError, "DB", fmt.Sprintf("%s: %v", downloadFailed, err))
+				fyne.Do(func() { dialog.ShowError(err, ui.window) })
+				return
+			}
+
+			shaPath, err := ui.downloadSingleFile(shaURL)
+			if err != nil {
+				ui.appendLogAsync(statusError, "DB", fmt.Sprintf("%s: %v", downloadFailed, err))
+				fyne.Do(func() { dialog.ShowError(err, ui.window) })
+				return
+			}
+
+			ui.appendLogAsync(statusInfo, "DB", fmt.Sprintf("%s: %s, %s", downloadDone, allFilesPath, shaPath))
+		}(fileHunterURL, fileHunterSHAURL)
 	})
 
 	importBtn := widget.NewButton(ui.t("fhImportButton"), func() {
@@ -1406,9 +1566,12 @@ func (ui *mainUI) showFileHunterBrowseView() {
 	var categories []settingsdb.FHCategoryItem
 	var files []settingsdb.FHFileRow
 	var extensions []settingsdb.FHFileTypeItem
+	currentPage := 0
+	var searchDebounce *time.Timer
 
 	// ── Widgets ───────────────────────────────────────────────────────────────
 	resultLabel := widget.NewLabel(fmt.Sprintf(ui.t("fhBrowseResults"), 0))
+	pageLabel := widget.NewLabel(fmt.Sprintf(ui.t("pagerCurrent"), 1, 1))
 	searchEntry := widget.NewEntry()
 	searchEntry.SetPlaceHolder(ui.t("fhBrowseSearchLabel"))
 
@@ -1426,12 +1589,68 @@ func (ui *mainUI) showFileHunterBrowseView() {
 		ui.t("fhBrowseColPath"),
 	}
 
-	fileTable := widget.NewTable(
+	totalPages := func() int {
+		if len(files) == 0 {
+			return 1
+		}
+		return (len(files)-1)/browsePageSize + 1
+	}
+	visibleFiles := func() []settingsdb.FHFileRow {
+		if len(files) == 0 {
+			return nil
+		}
+		start := currentPage * browsePageSize
+		if start >= len(files) {
+			start = 0
+			currentPage = 0
+		}
+		end := start + browsePageSize
+		if end > len(files) {
+			end = len(files)
+		}
+		return files[start:end]
+	}
+
+	var fileTable *widget.Table
+	var prevPageBtn *widget.Button
+	var nextPageBtn *widget.Button
+	updatePagingUI := func() {
+		pages := totalPages()
+		if currentPage < 0 {
+			currentPage = 0
+		}
+		if currentPage >= pages {
+			currentPage = pages - 1
+		}
+		if currentPage < 0 {
+			currentPage = 0
+		}
+		pageLabel.SetText(fmt.Sprintf(ui.t("pagerCurrent"), currentPage+1, pages))
+		if prevPageBtn != nil {
+			if currentPage == 0 {
+				prevPageBtn.Disable()
+			} else {
+				prevPageBtn.Enable()
+			}
+		}
+		if nextPageBtn != nil {
+			if currentPage >= pages-1 {
+				nextPageBtn.Disable()
+			} else {
+				nextPageBtn.Enable()
+			}
+		}
+		if fileTable != nil {
+			fileTable.Refresh()
+		}
+	}
+
+	fileTable = widget.NewTable(
 		func() (int, int) {
 			if len(files) == 0 {
 				return 2, len(fhHeaders)
 			}
-			return len(files) + 1, len(fhHeaders)
+			return len(visibleFiles()) + 1, len(fhHeaders)
 		},
 		func() fyne.CanvasObject {
 			t := canvas.NewText("", color.Black)
@@ -1458,7 +1677,13 @@ func (ui *mainUI) showFileHunterBrowseView() {
 				txt.Refresh()
 				return
 			}
-			row := files[id.Row-1]
+			vis := visibleFiles()
+			if id.Row-1 < 0 || id.Row-1 >= len(vis) {
+				txt.Text = ""
+				txt.Refresh()
+				return
+			}
+			row := vis[id.Row-1]
 			switch id.Col {
 			case 0:
 				txt.Text = row.Name
@@ -1486,11 +1711,12 @@ func (ui *mainUI) showFileHunterBrowseView() {
 		if id.Row <= 0 || len(files) == 0 {
 			return
 		}
+		vis := visibleFiles()
 		idx := id.Row - 1
-		if idx < 0 || idx >= len(files) {
+		if idx < 0 || idx >= len(vis) {
 			return
 		}
-		sha1 := strings.TrimSpace(files[idx].SHA1)
+		sha1 := strings.TrimSpace(vis[idx].SHA1)
 		if sha1 == "" {
 			ui.appendLog(statusWarn, "FH", ui.t("fhBrowseSHA1Empty"))
 			return
@@ -1580,8 +1806,23 @@ func (ui *mainUI) showFileHunterBrowseView() {
 			result = nil
 		}
 		files = result
-		fileTable.Refresh()
+		currentPage = 0
 		resultLabel.SetText(fmt.Sprintf(ui.t("fhBrowseResults"), len(files)))
+		updatePagingUI()
+	}
+
+	scheduleDebouncedRefresh := func() {
+		if searchDebounce != nil {
+			searchDebounce.Stop()
+		}
+		searchDebounce = time.AfterFunc(browseDebounceDelay, func() {
+			fyne.Do(func() {
+				if ui.activeView != viewFileHunterBrowse {
+					return
+				}
+				refresh()
+			})
+		})
 	}
 
 	// Navigate into sub-category on list tap
@@ -1594,9 +1835,23 @@ func (ui *mainUI) showFileHunterBrowseView() {
 		refresh()
 	}
 
+	prevPageBtn = widget.NewButton(ui.t("pagerPrev"), func() {
+		if currentPage > 0 {
+			currentPage--
+			updatePagingUI()
+		}
+	})
+	nextPageBtn = widget.NewButton(ui.t("pagerNext"), func() {
+		if currentPage < totalPages()-1 {
+			currentPage++
+			updatePagingUI()
+		}
+	})
+
 	// Search button
 	searchBtn := widget.NewButton(ui.t("fhBrowseSearchBtn"), func() { refresh() })
 	searchEntry.OnSubmitted = func(_ string) { refresh() }
+	searchEntry.OnChanged = func(string) { scheduleDebouncedRefresh() }
 
 	// Extension change triggers immediate refresh
 	extSelect.OnChanged = func(_ string) { refresh() }
@@ -1611,6 +1866,9 @@ func (ui *mainUI) showFileHunterBrowseView() {
 			widget.NewLabel(ui.t("fhBrowseExtFilter")+":"),
 			extSelect,
 			searchBtn,
+			prevPageBtn,
+			nextPageBtn,
+			pageLabel,
 			resultLabel,
 		),
 		searchEntry,
@@ -1636,6 +1894,7 @@ func (ui *mainUI) showFileHunterBrowseView() {
 	ui.previewCard.Title = ui.t("fhBrowseTitle")
 	ui.previewCard.SetContent(container.NewPadded(body))
 	ui.previewCard.Refresh()
+	updatePagingUI()
 
 	// Initial load in goroutine
 	go func() {
@@ -1738,7 +1997,7 @@ func (ui *mainUI) downloadSingleFile(sourceURL string) (string, error) {
 
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		if attempt > 1 {
-			ui.appendLog(statusWarn, "DB", fmt.Sprintf("Retrying download (%d/%d): %s", attempt, maxAttempts, parsedURL.String()))
+			ui.appendLogAsync(statusWarn, "DB", fmt.Sprintf("Retrying download (%d/%d): %s", attempt, maxAttempts, parsedURL.String()))
 		}
 
 		resp, reqErr := client.Get(parsedURL.String())
@@ -1985,11 +2244,20 @@ func (ui *mainUI) appendLog(severity, scope, message string) {
 	entry := fmt.Sprintf("[%s] [%s] [%s] %s", timestamp, severity, scope, message)
 
 	ui.logLines = append(ui.logLines, entry)
+	if len(ui.logLines) > maxLogLines {
+		ui.logLines = ui.logLines[len(ui.logLines)-maxLogLines:]
+	}
 
 	content := strings.Join(ui.logLines, "\n")
 	ui.logEntry.SetText(content)
 
 	ui.setStatus(severity, message)
+}
+
+func (ui *mainUI) appendLogAsync(severity, scope, message string) {
+	fyne.Do(func() {
+		ui.appendLog(severity, scope, message)
+	})
 }
 
 func (ui *mainUI) setStatus(severity, message string) {

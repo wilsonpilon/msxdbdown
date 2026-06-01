@@ -432,19 +432,28 @@ func TestGetRomVersionsByGameID(t *testing.T) {
 
 	setupSQL := `
 CREATE TABLE msxdb_romdetails (
-  HashID INTEGER,
-  GameID INTEGER,
-  RomType TEXT,
-  SHA1 TEXT,
-  Remark TEXT,
-  Meta TEXT,
-  Dump TEXT,
-  Active TEXT,
-  Preferred TEXT
+  HashID       INTEGER,
+  GameID       INTEGER,
+  RomType      TEXT,
+  SHA1         TEXT,
+  Remark       TEXT,
+  Meta         TEXT,
+  Dump         TEXT,
+  Active       TEXT,
+  StillForSale TEXT,
+  Preferred    TEXT,
+  IP           TEXT,
+  CreateDtTM   TEXT,
+  RomFound     INTEGER,
+  FileSize     INTEGER,
+  Suspect      INTEGER,
+  UpdateDtTm   TEXT,
+  CRC32        TEXT,
+  StartBytes   TEXT
 );
-INSERT INTO msxdb_romdetails VALUES (1, 77, 'ASCII8', 'AAA111', '', 'v1.0', 'GoodMSX', '1', '1');
-INSERT INTO msxdb_romdetails VALUES (2, 77, 'Konami', 'BBB222', 'beta', '', 'Unknown', '1', '0');
-INSERT INTO msxdb_romdetails VALUES (3, 88, 'ASCII8', 'CCC333', '', 'v0.1', 'GoodMSX', '1', '1');
+INSERT INTO msxdb_romdetails VALUES (1, 77, 'ASCII8', 'AAA111', '', 'v1.0', 'GoodMSX', '1', '0', '1', '', '', 1, 128, 0, '', '', '');
+INSERT INTO msxdb_romdetails VALUES (2, 77, 'Konami', 'BBB222', 'beta', '', 'Unknown', '1', '0', '0', '', '', 1, 64, 0, '', '', '');
+INSERT INTO msxdb_romdetails VALUES (3, 88, 'ASCII8', 'CCC333', '', 'v0.1', 'GoodMSX', '1', '0', '1', '', '', 1, 32, 0, '', '', '');
 `
 	if _, err := store.db.Exec(setupSQL); err != nil {
 		t.Fatalf("setup romdetails table: %v", err)
@@ -463,5 +472,176 @@ INSERT INTO msxdb_romdetails VALUES (3, 88, 'ASCII8', 'CCC333', '', 'v0.1', 'Goo
 	}
 	if versions[1].SHA1 != "BBB222" || versions[1].Version != "beta" || versions[1].RomType != "Konami" {
 		t.Fatalf("unexpected second version row: %+v", versions[1])
+	}
+}
+
+// TestMoveDatabaseFiles_HappyPath verifies that the main .db and its
+// WAL/SHM companion files are moved to the target path.
+func TestMoveDatabaseFiles_HappyPath(t *testing.T) {
+	t.Parallel()
+
+	srcDir := t.TempDir()
+	dstDir := t.TempDir()
+
+	srcDB := filepath.Join(srcDir, "msxdbdown.db")
+	srcWAL := srcDB + "-wal"
+	srcSHM := srcDB + "-shm"
+
+	dstDB := filepath.Join(dstDir, "msxdbdown.db")
+	dstWAL := dstDB + "-wal"
+	dstSHM := dstDB + "-shm"
+
+	// Create source files with distinct content.
+	for path, content := range map[string]string{
+		srcDB:  "main-content",
+		srcWAL: "wal-content",
+		srcSHM: "shm-content",
+	} {
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatalf("write %s: %v", path, err)
+		}
+	}
+
+	if err := MoveDatabaseFiles(srcDB, dstDB); err != nil {
+		t.Fatalf("MoveDatabaseFiles: %v", err)
+	}
+
+	// Source files must no longer exist.
+	for _, p := range []string{srcDB, srcWAL, srcSHM} {
+		if _, err := os.Stat(p); !os.IsNotExist(err) {
+			t.Errorf("source file still exists after move: %s", p)
+		}
+	}
+
+	// Destination files must exist with the original content.
+	for path, want := range map[string]string{
+		dstDB:  "main-content",
+		dstWAL: "wal-content",
+		dstSHM: "shm-content",
+	} {
+		got, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read destination %s: %v", path, err)
+		}
+		if string(got) != want {
+			t.Errorf("destination %s: want %q, got %q", path, want, string(got))
+		}
+	}
+}
+
+// TestMoveDatabaseFiles_RollbackOnFailure verifies that when a move fails
+// mid-way the already-moved files are restored to the source location.
+func TestMoveDatabaseFiles_RollbackOnFailure(t *testing.T) {
+	t.Parallel()
+
+	srcDir := t.TempDir()
+	dstDir := t.TempDir()
+
+	srcDB := filepath.Join(srcDir, "msxdbdown.db")
+	srcWAL := srcDB + "-wal"
+
+	if err := os.WriteFile(srcDB, []byte("main"), 0o644); err != nil {
+		t.Fatalf("write srcDB: %v", err)
+	}
+	if err := os.WriteFile(srcWAL, []byte("wal"), 0o644); err != nil {
+		t.Fatalf("write srcWAL: %v", err)
+	}
+
+	dstDB := filepath.Join(dstDir, "msxdbdown.db")
+
+	// Place a directory at the WAL destination path so that any attempt to
+	// rename or write a file there fails — this forces a mid-move error after
+	// the main .db has already been moved successfully.
+	if err := os.MkdirAll(dstDB+"-wal", 0o755); err != nil {
+		t.Fatalf("create blocking directory: %v", err)
+	}
+
+	err := MoveDatabaseFiles(srcDB, dstDB)
+	if err == nil {
+		t.Fatal("expected an error, got nil")
+	}
+
+	// Both source files must still be present (rollback succeeded).
+	for _, p := range []string{srcDB, srcWAL} {
+		if _, statErr := os.Stat(p); statErr != nil {
+			t.Errorf("source file missing after failed move (rollback failed): %s", p)
+		}
+	}
+}
+
+// TestImportSQLDumpRobustParser covers the edge-cases that the old line-by-line
+// parser could not handle correctly.
+func TestImportSQLDumpRobustParser(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "msxdbdown.db")
+	store, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	sqlPath := filepath.Join(dir, "robust.sql")
+	content := `
+/* preamble block comment — must NOT swallow the next statement */
+CREATE TABLE robust_test (id INTEGER, val TEXT);
+
+/* inline comment */ INSERT INTO robust_test VALUES (1, 'hello; world');
+
+INSERT INTO robust_test VALUES (2, 'two'); -- trailing line comment
+
+INSERT INTO robust_test VALUES (3, 'three''s apostrophe');
+` + "INSERT INTO `robust_test` VALUES (4, 'semicolon ; in value');\n"
+
+	if err := os.WriteFile(sqlPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write sql: %v", err)
+	}
+
+	inserted, err := store.ImportSQLDump(sqlPath, false, nil)
+	if err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	if inserted != 4 {
+		t.Fatalf("expected 4 INSERT statements, got %d", inserted)
+	}
+
+	db := store.db
+	var count int
+	if err := db.QueryRow("SELECT COUNT(*) FROM robust_test").Scan(&count); err != nil {
+		t.Fatalf("count rows: %v", err)
+	}
+	if count != 4 {
+		t.Fatalf("expected 4 rows, got %d", count)
+	}
+
+	// Semicolon inside a string value must be preserved, not treated as
+	// a statement terminator.
+	var val1 string
+	if err := db.QueryRow("SELECT val FROM robust_test WHERE id = 1").Scan(&val1); err != nil {
+		t.Fatalf("read row 1: %v", err)
+	}
+	if val1 != "hello; world" {
+		t.Fatalf("expected 'hello; world', got %q", val1)
+	}
+
+	// Escaped single-quote ('' sequence) inside a single-quoted string must
+	// round-trip correctly through the parser and SQLite.
+	var val3 string
+	if err := db.QueryRow("SELECT val FROM robust_test WHERE id = 3").Scan(&val3); err != nil {
+		t.Fatalf("read row 3: %v", err)
+	}
+	if val3 != "three's apostrophe" {
+		t.Fatalf("expected \"three's apostrophe\", got %q", val3)
+	}
+
+	// Semicolon inside a string value for a backtick-quoted table name must
+	// also be preserved.
+	var val4 string
+	if err := db.QueryRow("SELECT val FROM robust_test WHERE id = 4").Scan(&val4); err != nil {
+		t.Fatalf("read row 4: %v", err)
+	}
+	if val4 != "semicolon ; in value" {
+		t.Fatalf("expected 'semicolon ; in value', got %q", val4)
 	}
 }
