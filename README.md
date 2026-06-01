@@ -147,6 +147,12 @@ Set-Location "C:\dos\msxdbdown"
 .\build.ps1 -Windows -DebugBuild -Version "0.1.7" -Run -RunArgs "version"
 ```
 
+## Mais screenshots
+
+![Screenshot 01 do MSX DB Down](images/msxdbdown-01.png)
+
+![Screenshot 02 do MSX DB Down](images/msxdbdown-02.png)
+
 ## Proximos passos (roadmap)
 
 1. Estruturar schema consolidado do catalogo final a partir das bases importadas

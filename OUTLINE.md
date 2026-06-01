@@ -23,6 +23,7 @@ Implementado em `main.go`:
 - Menu `Banco de Dados` com submenus:
   - `Atualizar MSX RomDB` - baixa zip do dump SQL, descompacta e importa no SQLite atual
   - `Atualizar File-Hunter` - baixa 2 arquivos (`allfiles.txt` + `sha1sums.txt`)
+  - `Browse File-Hunter` - navega no catalogo File-Hunter importado no SQLite
   - `Limpar Downloads` - remove arquivos em `download/`
 - Tela de download mostrando URL(s) + botao `Atualizar`
 - Download com retry automatico (2 tentativas)
@@ -35,6 +36,37 @@ Implementado em `main.go`:
   - refresh atomico por tabela,
   - logs detalhados por tabela,
   - resumo final com contadores.
+
+### 2.0.1 Catalogo File-Hunter (novo)
+
+Implementado em `internal/settingsdb/settingsdb_filehunter.go` e integrado em `main.go`:
+
+- Importacao de `download/allfiles.txt` para schema normalizado no SQLite.
+- Importacao de `download/sha1sums.txt` para atualizar SHA1 dos arquivos importados.
+- Tabelas novas:
+  - `fh_category`
+  - `fh_file_type`
+  - `fh_file`
+  - `fh_file_category`
+- Regras de parsing:
+  - `full_path` preserva caminho completo (ex.: `GAMES\\MSX1\\ROM\\Gradius 2 ...zip`)
+  - `name` guarda nome sem extensao (chave textual de busca)
+  - extensao normalizada (ex.: `zip`) em tabela dedicada de tipo
+  - categorias hierarquicas registradas por `position` (nivel no caminho)
+- Busca/navegacao prontas no Store:
+  - `ListFHCategories(pathFilter)`
+  - `ListFHFileTypes(pathFilter)`
+  - `SearchFHFiles(pathFilter, nameQuery, extension, limit)`
+
+### 2.0.2 Browse File-Hunter (UI)
+
+Implementado em `main.go` (`showFileHunterBrowseView`):
+
+- Painel de categorias com contagem e navegacao por niveis.
+- Breadcrumb clicavel para subir no caminho.
+- Filtro por extensao + busca por nome.
+- Tabela com `Nome`, `Ext`, `SHA1` e `Caminho completo`.
+- Clique na linha copia SHA1 para a area de transferencia.
 
 ### 2.1 UI principal
 
@@ -86,7 +118,18 @@ Implementado em `internal/about/about.go`:
 - data + hora de build na mesma linha,
 - copyrights na mesma linha,
 - link clicavel para `https://www.cybernostra.com`,
-- ano dinamico `1972 - <ano atual>`.
+- ano dinamico `1972 - <ano atual>`,
+- exibe o icone do aplicativo no topo do dialogo.
+
+### 2.3.1 Icone do aplicativo
+
+Implementado em `internal/appicon/appicon.go`:
+
+- Recurso de icone monocromatico (MSX + database) gerado em runtime como `fyne.Resource`.
+- Aplicado em:
+  - icone global da app (`application.SetIcon(...)`),
+  - icone da janela principal (`window.SetIcon(...)`),
+  - imagem no dialogo About.
 
 ### 2.4 Menu traduzido nas 5 linguas
 
@@ -128,6 +171,12 @@ Em `build.ps1`:
 - execucao opcional: `-Run -RunArgs ...`
 - limpeza: `-Clean`
 - versao: `-Version "0.1.7"`
+- icone no EXE Windows embutido automaticamente via `rsrc`
+- opcao `-NoIcon` para pular geracao/embedding de icone (build mais rapido)
+
+Default atual no script:
+
+- `-Version` padrao = `0.1.7`
 
 Build metadata:
 
@@ -209,8 +258,9 @@ Fluxo atual:
 ## 6) Estrutura atual de pacotes internos
 
 - `internal/about/` - dialogo About
+- `internal/appicon/` - geracao do icone monocromatico da app
 - `internal/configui/` - dialogo Config UI com abas UI / URLs / SQLite
-- `internal/settingsdb/` - persistencia SQLite + importacao SQL
+- `internal/settingsdb/` - persistencia SQLite + importacao SQL + catalogo File-Hunter
 - `internal/uiprefs/` - normalizacao/defaults de idioma/tema/fonte/densidade + URLs
 - `internal/uitheme/` - tema custom Fyne
 
@@ -238,6 +288,11 @@ Cobrem:
 - refresh atomico por tabela,
 - logs detalhados e resumo final.
 
+Observacao de estado atual:
+
+- `go test ./internal/settingsdb` tem uma falha conhecida em `TestGetRomVersionsByGameID`
+  por divergencia de schema de teste (`no such column: FileSize`) e nao por falha do fluxo File-Hunter.
+
 ## 9) Comandos uteis
 
 ### 9.1 Rodar app
@@ -260,6 +315,7 @@ go run . --lang pt --help
 Set-Location "C:\dos\msxdbdown"
 go test ./internal/settingsdb -v
 go test ./internal/uiprefs -v
+go test . ./internal/appicon/
 ```
 
 ### 9.4 Build via script
@@ -274,6 +330,11 @@ Set-Location "C:\dos\msxdbdown"
 .\build.ps1 -Windows -DebugBuild -Version "0.1.7" -Run -RunArgs "version"
 ```
 
+```powershell
+Set-Location "C:\dos\msxdbdown"
+.\build.ps1 -Windows -DebugBuild -NoIcon -Run
+```
+
 ## 10) Historico resumido de decisoes relevantes
 
 1. Configuracoes sairam de `fyne.Preferences` para SQLite.
@@ -283,6 +344,9 @@ Set-Location "C:\dos\msxdbdown"
 5. O MSX RomDB agora e importado para o SQLite da app.
 6. O refresh da importacao passou de `DELETE FROM` para estrategia atomica por tabela.
 7. A importacao ganhou logs por tabela e resumo agregado.
+8. Foi adicionado catalogo File-Hunter normalizado no SQLite (categorias, tipo de arquivo, SHA1).
+9. O app passou a ter icone proprio aplicado na janela/About e no EXE Windows.
+10. O build ganhou modo `-NoIcon` para iteracao rapida.
 
 ## 11) Pendencias / proximos passos
 

@@ -26,6 +26,25 @@ type Store struct {
 	db *sql.DB
 }
 
+type RomInfoSearchRow struct {
+	GameID   int64
+	GameName string
+	Year     string
+	Platform string
+	Company  string
+}
+
+type RomVersionRow struct {
+	RomType   string
+	Version   string
+	SHA1      string
+	Source    string // Dump quality string (GoodMSX, Unknown, etc.)
+	FileSize  string
+	Active    string
+	Preferred string
+	RomFound  string
+}
+
 type ImportLogFunc func(message string)
 
 type importStats struct {
@@ -195,6 +214,197 @@ ON CONFLICT(key) DO UPDATE SET value = excluded.value
 	return nil
 }
 
+func (s *Store) SearchRomInfoByName(name string, limit int) ([]RomInfoSearchRow, error) {
+	if s == nil || s.db == nil {
+		return nil, errors.New("nil store")
+	}
+	if limit <= 0 {
+		limit = 200
+	}
+
+	queryName := "%" + escapeSQLLike(strings.TrimSpace(name)) + "%"
+
+	const query = `
+SELECT
+				  COALESCE(r.GameID, 0),
+  COALESCE(r.GameName, ''),
+  COALESCE(r.Year, ''),
+  COALESCE(r.Platform, ''),
+  COALESCE(NULLIF(c.ShortName, ''), NULLIF(c.fullname, ''), '') AS company
+FROM msxdb_rominfo r
+LEFT JOIN msxdb_company c ON c.CompanyID = r.CompanyID1
+WHERE COALESCE(r.GameName, '') LIKE ? ESCAPE '\'
+ORDER BY r.GameName COLLATE NOCASE, r.Year
+LIMIT ?;
+`
+
+	rows, err := s.db.Query(query, queryName, limit)
+	if err != nil {
+		return nil, fmt.Errorf("search msxdb_rominfo: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	result := make([]RomInfoSearchRow, 0, 32)
+	for rows.Next() {
+		var row RomInfoSearchRow
+		if err := rows.Scan(&row.GameID, &row.GameName, &row.Year, &row.Platform, &row.Company); err != nil {
+			return nil, fmt.Errorf("scan msxdb_rominfo row: %w", err)
+		}
+		result = append(result, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate msxdb_rominfo rows: %w", err)
+	}
+
+	return result, nil
+}
+
+func (s *Store) GetRomInfoDetailsByGameID(gameID int64) (map[string]string, error) {
+	if s == nil || s.db == nil {
+		return nil, errors.New("nil store")
+	}
+
+	columns, err := romInfoColumnNames(s.db)
+	if err != nil {
+		return nil, err
+	}
+	if len(columns) == 0 {
+		return nil, errors.New("msxdb_rominfo has no columns")
+	}
+
+	query := fmt.Sprintf("SELECT * FROM msxdb_rominfo WHERE GameID = ? LIMIT 1")
+	values := make([]any, len(columns))
+	scanArgs := make([]any, len(columns))
+	for i := range values {
+		scanArgs[i] = &values[i]
+	}
+
+	if err := s.db.QueryRow(query, gameID).Scan(scanArgs...); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, fmt.Errorf("game not found: %d", gameID)
+		}
+		return nil, fmt.Errorf("load game details %d: %w", gameID, err)
+	}
+
+	details := make(map[string]string, len(columns)+2)
+	for i, col := range columns {
+		details[col] = sqlValueToString(values[i])
+	}
+
+	if companyID := strings.TrimSpace(details["CompanyID1"]); companyID != "" {
+		if name, err := lookupCompanyName(s.db, companyID); err == nil && name != "" {
+			details["CompanyName1"] = name
+		}
+	}
+	if companyID := strings.TrimSpace(details["CompanyID2"]); companyID != "" {
+		if name, err := lookupCompanyName(s.db, companyID); err == nil && name != "" {
+			details["CompanyName2"] = name
+		}
+	}
+
+	return details, nil
+}
+
+func (s *Store) GetRomVersionsByGameID(gameID int64) ([]RomVersionRow, error) {
+	if s == nil || s.db == nil {
+		return nil, errors.New("nil store")
+	}
+
+	const query = `
+SELECT
+  COALESCE(RomType, ''),
+  COALESCE(NULLIF(Meta, ''), NULLIF(Remark, ''), ''),
+  COALESCE(SHA1, ''),
+  COALESCE(Dump, ''),
+  COALESCE(CAST(FileSize AS TEXT), ''),
+  COALESCE(CAST(Active AS TEXT), '0'),
+  COALESCE(CAST(Preferred AS TEXT), '0'),
+  COALESCE(CAST(RomFound AS TEXT), '0')
+FROM msxdb_romdetails
+WHERE GameID = ?
+ORDER BY CAST(COALESCE(Preferred, '0') AS INTEGER) DESC,
+         CAST(COALESCE(Active, '0') AS INTEGER) DESC,
+         HashID ASC;
+`
+
+	rows, err := s.db.Query(query, gameID)
+	if err != nil {
+		return nil, fmt.Errorf("load rom versions %d: %w", gameID, err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	result := make([]RomVersionRow, 0, 8)
+	for rows.Next() {
+		var row RomVersionRow
+		if err := rows.Scan(&row.RomType, &row.Version, &row.SHA1, &row.Source, &row.FileSize, &row.Active, &row.Preferred, &row.RomFound); err != nil {
+			return nil, fmt.Errorf("scan rom version row: %w", err)
+		}
+		result = append(result, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate rom version rows: %w", err)
+	}
+
+	return result, nil
+}
+
+func romInfoColumnNames(db *sql.DB) ([]string, error) {
+	rows, err := db.Query("PRAGMA table_info(msxdb_rominfo)")
+	if err != nil {
+		return nil, fmt.Errorf("read msxdb_rominfo schema: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	columns := make([]string, 0, 24)
+	for rows.Next() {
+		var cid int
+		var name string
+		var colType string
+		var notNull int
+		var defaultValue any
+		var pk int
+		if err := rows.Scan(&cid, &name, &colType, &notNull, &defaultValue, &pk); err != nil {
+			return nil, fmt.Errorf("scan msxdb_rominfo schema: %w", err)
+		}
+		columns = append(columns, name)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate msxdb_rominfo schema: %w", err)
+	}
+
+	return columns, nil
+}
+
+func lookupCompanyName(db *sql.DB, companyID string) (string, error) {
+	var name string
+	err := db.QueryRow(`
+SELECT COALESCE(NULLIF(ShortName, ''), NULLIF(fullname, ''), '')
+FROM msxdb_company
+WHERE CompanyID = ?
+LIMIT 1
+`, companyID).Scan(&name)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(name), nil
+}
+
+func sqlValueToString(value any) string {
+	switch v := value.(type) {
+	case nil:
+		return ""
+	case string:
+		return v
+	case []byte:
+		return string(v)
+	default:
+		return fmt.Sprintf("%v", v)
+	}
+}
+
 func ResetAtPath(dbPath string, location string) error {
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
 		return fmt.Errorf("create database directory: %w", err)
@@ -306,7 +516,10 @@ func (s *Store) ImportSQLDump(sqlPath string, refresh bool, logf ImportLogFunc) 
 		}
 
 		normalized := strings.ToUpper(strings.TrimSpace(stmt))
-		if normalized == "BEGIN;" || normalized == "COMMIT;" || normalized == "BEGIN" || normalized == "COMMIT" {
+		if keyword, ok := transactionControlKeyword(stmt); ok {
+			if logf != nil {
+				logf(fmt.Sprintf("skipped transaction control statement (%s)", keyword))
+			}
 			return nil
 		}
 
@@ -549,4 +762,36 @@ func parseInsertTargetTable(stmt string) string {
 	table := strings.TrimSpace(rest[:end])
 	table = strings.Trim(table, "`\"")
 	return table
+}
+
+func transactionControlKeyword(stmt string) (string, bool) {
+	normalized := strings.TrimSpace(stmt)
+	normalized = strings.TrimSuffix(normalized, ";")
+	normalized = strings.ToUpper(strings.Join(strings.Fields(normalized), " "))
+
+	switch normalized {
+	case "BEGIN", "BEGIN TRANSACTION", "BEGIN IMMEDIATE", "BEGIN EXCLUSIVE", "BEGIN DEFERRED", "COMMIT", "END", "END TRANSACTION", "ROLLBACK", "ROLLBACK TRANSACTION":
+		if strings.HasPrefix(normalized, "BEGIN") {
+			return "BEGIN", true
+		}
+		if strings.HasPrefix(normalized, "ROLLBACK") {
+			return "ROLLBACK", true
+		}
+		if strings.HasPrefix(normalized, "END") {
+			return "END", true
+		}
+		if strings.HasPrefix(normalized, "COMMIT") {
+			return "COMMIT", true
+		}
+		return normalized, true
+	default:
+		return "", false
+	}
+}
+
+func escapeSQLLike(value string) string {
+	value = strings.ReplaceAll(value, "\\", "\\\\")
+	value = strings.ReplaceAll(value, "%", "\\%")
+	value = strings.ReplaceAll(value, "_", "\\_")
+	return value
 }

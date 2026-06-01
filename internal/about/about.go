@@ -10,6 +10,7 @@ import (
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/widget"
+	"msxdbdown/internal/appicon"
 )
 
 // Show displays the About dialog with version and copyright information.
@@ -22,6 +23,10 @@ import (
 //   - tr: i18n translation function (key -> localized string)
 func Show(parent fyne.Window, version, buildDate, buildTime, buildNumber string, tr func(string) string) {
 	// Title: "MSX DB Down" in larger, bold, blue text
+	icon := canvas.NewImageFromResource(appicon.Resource())
+	icon.FillMode = canvas.ImageFillContain
+	icon.SetMinSize(fyne.NewSize(84, 84))
+
 	titleText := canvas.NewText("MSX DB Down", color.NRGBA{0x00, 0x66, 0xCC, 0xFF})
 	titleText.TextSize = 24
 	titleText.TextStyle = fyne.TextStyle{Bold: true}
@@ -55,6 +60,7 @@ func Show(parent fyne.Window, version, buildDate, buildTime, buildNumber string,
 
 	// Assemble content
 	content := container.NewVBox(
+		container.NewCenter(icon),
 		titleText,
 		sep1,
 		versionBuildLine,

@@ -229,3 +229,239 @@ INSERT INTO games VALUES (2, 'new');
 		t.Fatalf("expected no backup tables after successful import, got %d", backupCount)
 	}
 }
+
+func TestImportSQLDumpIgnoresBeginEndTransactionDirectives(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "msxdbdown.db")
+	store, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	sqlPath := filepath.Join(dir, "import-with-end.sql")
+	content := `
+BEGIN;
+CREATE TABLE tx_table (
+  id INTEGER PRIMARY KEY,
+  title TEXT NOT NULL
+);
+INSERT INTO tx_table VALUES (1, 'one');
+END;
+BEGIN TRANSACTION;
+INSERT INTO tx_table VALUES (2, 'two');
+COMMIT;
+`
+	if err := os.WriteFile(sqlPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write sql: %v", err)
+	}
+
+	events := []string{}
+	inserted, err := store.ImportSQLDump(sqlPath, false, func(message string) {
+		events = append(events, message)
+	})
+	if err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	if inserted != 2 {
+		t.Fatalf("expected 2 insert statements, got %d", inserted)
+	}
+
+	hasSkippedEnd := false
+	for _, ev := range events {
+		if strings.Contains(ev, "skipped transaction control statement (END)") {
+			hasSkippedEnd = true
+			break
+		}
+	}
+	if !hasSkippedEnd {
+		t.Fatalf("expected END skip log entry, got: %v", events)
+	}
+
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open raw db: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	var count int
+	if err := db.QueryRow("SELECT COUNT(*) FROM tx_table").Scan(&count); err != nil {
+		t.Fatalf("count rows: %v", err)
+	}
+	if count != 2 {
+		t.Fatalf("expected 2 rows after import, got %d", count)
+	}
+}
+
+func TestSearchRomInfoByNameReturnsGridRows(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "msxdbdown.db")
+	store, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	setupSQL := `
+CREATE TABLE msxdb_company (
+  CompanyID INTEGER,
+  ShortName TEXT,
+  fullname TEXT
+);
+CREATE TABLE msxdb_rominfo (
+  GameID INTEGER,
+  GameName TEXT,
+  Year TEXT,
+  CompanyID1 INTEGER,
+  Platform TEXT
+);
+INSERT INTO msxdb_company VALUES (1, 'Konami', 'Konami Full');
+INSERT INTO msxdb_company VALUES (2, '', 'ASCII Corporation');
+INSERT INTO msxdb_rominfo VALUES (10, 'Metal Gear', '1987', 1, 'MSX2');
+INSERT INTO msxdb_rominfo VALUES (11, 'Maze of Galious', '1987', 1, 'MSX');
+INSERT INTO msxdb_rominfo VALUES (12, 'Alpha', '1984', 2, 'MSX');
+`
+	if _, err := store.db.Exec(setupSQL); err != nil {
+		t.Fatalf("setup romdb tables: %v", err)
+	}
+
+	rows, err := store.SearchRomInfoByName("ma", 10)
+	if err != nil {
+		t.Fatalf("search rom info: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("expected 1 result, got %d (%v)", len(rows), rows)
+	}
+	if rows[0].GameID != 11 {
+		t.Fatalf("expected GameID 11, got %d", rows[0].GameID)
+	}
+	if rows[0].GameName != "Maze of Galious" || rows[0].Year != "1987" || rows[0].Platform != "MSX" || rows[0].Company != "Konami" {
+		t.Fatalf("unexpected row data: %+v", rows[0])
+	}
+
+	rows, err = store.SearchRomInfoByName("", 2)
+	if err != nil {
+		t.Fatalf("search empty filter: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("expected limit=2 rows, got %d", len(rows))
+	}
+
+	if _, err := store.db.Exec("INSERT INTO msxdb_rominfo VALUES (13, '100% Maze', '1985', 2, 'MSX')"); err != nil {
+		t.Fatalf("insert wildcard row: %v", err)
+	}
+	rows, err = store.SearchRomInfoByName("100%", 10)
+	if err != nil {
+		t.Fatalf("search escaped wildcard: %v", err)
+	}
+	if len(rows) != 1 || rows[0].GameName != "100% Maze" || rows[0].Company != "ASCII Corporation" {
+		t.Fatalf("unexpected wildcard search rows: %v", rows)
+	}
+}
+
+func TestGetRomInfoDetailsByGameID(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "msxdbdown.db")
+	store, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	setupSQL := `
+CREATE TABLE msxdb_company (
+  CompanyID INTEGER,
+  ShortName TEXT,
+  fullname TEXT
+);
+CREATE TABLE msxdb_rominfo (
+  GameID INTEGER,
+  GameName TEXT,
+  Year TEXT,
+  CompanyID1 INTEGER,
+  CompanyID2 INTEGER,
+  Platform TEXT,
+  Notes TEXT
+);
+INSERT INTO msxdb_company VALUES (1, 'Konami', 'Konami Full');
+INSERT INTO msxdb_company VALUES (2, '', 'ASCII Corporation');
+INSERT INTO msxdb_rominfo VALUES (77, 'Metal Gear', '1987', 1, 2, 'MSX2', 'Stealth action');
+`
+	if _, err := store.db.Exec(setupSQL); err != nil {
+		t.Fatalf("setup romdb tables: %v", err)
+	}
+
+	details, err := store.GetRomInfoDetailsByGameID(77)
+	if err != nil {
+		t.Fatalf("load details: %v", err)
+	}
+
+	checks := map[string]string{
+		"GameID":       "77",
+		"GameName":     "Metal Gear",
+		"Year":         "1987",
+		"Platform":     "MSX2",
+		"CompanyID1":   "1",
+		"CompanyID2":   "2",
+		"CompanyName1": "Konami",
+		"CompanyName2": "ASCII Corporation",
+	}
+	for key, want := range checks {
+		if got := details[key]; got != want {
+			t.Fatalf("expected %s=%q, got %q", key, want, got)
+		}
+	}
+}
+
+func TestGetRomVersionsByGameID(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "msxdbdown.db")
+	store, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	setupSQL := `
+CREATE TABLE msxdb_romdetails (
+  HashID INTEGER,
+  GameID INTEGER,
+  RomType TEXT,
+  SHA1 TEXT,
+  Remark TEXT,
+  Meta TEXT,
+  Dump TEXT,
+  Active TEXT,
+  Preferred TEXT
+);
+INSERT INTO msxdb_romdetails VALUES (1, 77, 'ASCII8', 'AAA111', '', 'v1.0', 'GoodMSX', '1', '1');
+INSERT INTO msxdb_romdetails VALUES (2, 77, 'Konami', 'BBB222', 'beta', '', 'Unknown', '1', '0');
+INSERT INTO msxdb_romdetails VALUES (3, 88, 'ASCII8', 'CCC333', '', 'v0.1', 'GoodMSX', '1', '1');
+`
+	if _, err := store.db.Exec(setupSQL); err != nil {
+		t.Fatalf("setup romdetails table: %v", err)
+	}
+
+	versions, err := store.GetRomVersionsByGameID(77)
+	if err != nil {
+		t.Fatalf("load versions: %v", err)
+	}
+	if len(versions) != 2 {
+		t.Fatalf("expected 2 versions, got %d", len(versions))
+	}
+
+	if versions[0].SHA1 != "AAA111" || versions[0].Version != "v1.0" || versions[0].RomType != "ASCII8" {
+		t.Fatalf("unexpected first version row: %+v", versions[0])
+	}
+	if versions[1].SHA1 != "BBB222" || versions[1].Version != "beta" || versions[1].RomType != "Konami" {
+		t.Fatalf("unexpected second version row: %+v", versions[1])
+	}
+}

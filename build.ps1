@@ -36,10 +36,15 @@
     Delete the ./dist directory before building.
 
 .PARAMETER Version
-    Version string embedded in the binary (default: "dev").
+    Version string embedded in the binary (default: "0.1.7").
+
+.PARAMETER NoIcon
+    Skip icon generation and .syso embedding entirely.
+    Useful for faster iteration builds where the EXE icon is not needed.
 
 .EXAMPLE
     .\build.ps1 -Windows -Release
+    .\build.ps1 -Windows -Release  -NoIcon
     .\build.ps1 -Linux   -DebugBuild
     .\build.ps1 -All     -Release  -Version "0.1.7"
     .\build.ps1 -Windows -Release  -Run  -RunArgs "--lang","en","--theme","dark"
@@ -57,7 +62,8 @@ param(
     [switch]    $Run,
     [string[]]  $RunArgs = @(),
     [switch]    $Clean,
-    [string]    $Version = "dev"
+    [switch]    $NoIcon,
+    [string]    $Version = "0.1.7"
 )
 
 Set-StrictMode -Version Latest
@@ -112,6 +118,98 @@ $ldflags = if ($Release)    { "-s -w $ldBase" } else { $ldBase }
 $gcflags = if ($DebugBuild) { "all=-N -l" }     else { "" }
 
 $distDir = Join-Path $PSScriptRoot "dist"
+$windowsIconPath = Join-Path $PSScriptRoot "images\msxdbdown.ico"
+
+# ---------------------------------------------------------------------------
+# Icon and resource helpers (Windows)
+# ---------------------------------------------------------------------------
+
+function New-MSXDDownIcon([string]$icoPath) {
+    if ($env:OS -ne "Windows_NT") {
+        Write-Warn "Skipping icon generation: current host is not Windows."
+        return
+    }
+
+    Add-Type -AssemblyName System.Drawing
+
+    $size = 128
+    $bmp = [System.Drawing.Bitmap]::new($size, $size)
+    $g = [System.Drawing.Graphics]::FromImage($bmp)
+    $whitePen = [System.Drawing.Pen]::new([System.Drawing.Color]::White, 3)
+    $whiteBrush = [System.Drawing.SolidBrush]::new([System.Drawing.Color]::White)
+    $blackBrush = [System.Drawing.SolidBrush]::new([System.Drawing.Color]::Black)
+
+    try {
+        $g.Clear([System.Drawing.Color]::Transparent)
+
+        # Outer plate for stronger contrast in both light/dark shells.
+        $g.FillRectangle($whiteBrush, 8, 8, 112, 112)
+        $g.FillRectangle($blackBrush, 12, 12, 104, 104)
+
+        # 1980s-style computer (monitor + keyboard)
+        $g.DrawRectangle($whitePen, 18, 20, 58, 36)
+        $g.FillRectangle($blackBrush, 23, 25, 48, 26)
+        $g.DrawLine($whitePen, 27, 40, 70, 40)
+        $g.FillRectangle($whiteBrush, 22, 61, 50, 15)
+        $g.FillRectangle($blackBrush, 24, 63, 46, 11)
+        $g.DrawLine($whitePen, 26, 64, 68, 64)
+        $g.DrawLine($whitePen, 26, 68, 68, 68)
+        $g.DrawLine($whitePen, 26, 72, 68, 72)
+
+        # Database stack/cylinder abstraction.
+        $g.DrawRectangle($whitePen, 80, 32, 30, 50)
+        $g.DrawLine($whitePen, 84, 36, 106, 36)
+        $g.DrawLine($whitePen, 84, 46, 106, 46)
+        $g.DrawLine($whitePen, 84, 56, 106, 56)
+        $g.DrawLine($whitePen, 84, 66, 106, 66)
+        $g.DrawLine($whitePen, 84, 76, 106, 76)
+
+        # Connection between machine and database.
+        $g.DrawLine($whitePen, 74, 49, 79, 49)
+
+        $icoDir = Split-Path -Parent $icoPath
+        if (-not (Test-Path $icoDir)) {
+            New-Item -ItemType Directory -Force -Path $icoDir | Out-Null
+        }
+
+        $icon = [System.Drawing.Icon]::FromHandle($bmp.GetHicon())
+        $stream = [System.IO.File]::Open($icoPath, [System.IO.FileMode]::Create)
+        try {
+            $icon.Save($stream)
+        }
+        finally {
+            $stream.Dispose()
+            $icon.Dispose()
+        }
+    }
+    finally {
+        $whitePen.Dispose()
+        $whiteBrush.Dispose()
+        $blackBrush.Dispose()
+        $g.Dispose()
+        $bmp.Dispose()
+    }
+}
+
+function Get-RsrcExePath() {
+    $existing = Get-Command rsrc -ErrorAction SilentlyContinue
+    if ($existing) { return $existing.Source }
+
+    Write-Step "Installing rsrc tool (github.com/akavel/rsrc) ..."
+    $goExe = (Get-Command go -ErrorAction Stop).Source
+    & $goExe install github.com/akavel/rsrc@latest
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to install rsrc tool."
+    }
+
+    $gopath = (& $goExe env GOPATH).Trim()
+    $candidate = Join-Path $gopath "bin\rsrc.exe"
+    if (-not (Test-Path $candidate)) {
+        throw "rsrc was installed but executable was not found at $candidate"
+    }
+
+    return $candidate
+}
 
 # ---------------------------------------------------------------------------
 # Banner
@@ -122,6 +220,8 @@ Write-Host "  Profile  : " -NoNewline; Write-Host $profileLabel.ToUpper()       
 Write-Host "  Version  : " -NoNewline; Write-Host $Version                      -ForegroundColor White
 Write-Host "  Date     : " -NoNewline; Write-Host "$buildDate $buildTime (UTC)" -ForegroundColor White
 Write-Host "  Build#   : " -NoNewline; Write-Host $buildNumber                  -ForegroundColor Cyan
+Write-Host "  Icon     : " -NoNewline
+if ($NoIcon) { Write-Host "SKIPPED (-NoIcon)" -ForegroundColor DarkYellow } else { Write-Host "enabled" -ForegroundColor Green }
 Write-Host ""
 
 # ---------------------------------------------------------------------------
@@ -141,6 +241,12 @@ if ($Clean) {
 
 New-Item -ItemType Directory -Force -Path $distDir | Out-Null
 
+if ($Windows -and -not $NoIcon) {
+    Write-Step "Generating Windows icon at $windowsIconPath"
+    New-MSXDDownIcon -icoPath $windowsIconPath
+    Write-Ok "Icon ready: $windowsIconPath"
+}
+
 # ---------------------------------------------------------------------------
 # Build function
 # ---------------------------------------------------------------------------
@@ -156,6 +262,16 @@ function Invoke-GoBuild([string]$goos, [string]$goarch = "amd64") {
     Write-Step "Building $label  -->  $outPath"
 
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
+
+    $sysoPath = Join-Path $PSScriptRoot "msxdbdown-icon_windows_$goarch.syso"
+    if (-not $NoIcon -and $goos -eq "windows" -and $goarch -eq "amd64" -and (Test-Path $windowsIconPath)) {
+        $rsrcExe = Get-RsrcExePath
+        Write-Step "Embedding icon into Windows resources"
+        & $rsrcExe -ico $windowsIconPath -arch amd64 -o $sysoPath
+        if ($LASTEXITCODE -ne 0) {
+            throw "Failed to generate Windows resource file: $sysoPath"
+        }
+    }
 
     $env:GOOS        = $goos
     $env:GOARCH      = $goarch
@@ -188,6 +304,7 @@ function Invoke-GoBuild([string]$goos, [string]$goarch = "amd64") {
     $code = $LASTEXITCODE
 
     $sw.Stop()
+    if (Test-Path $sysoPath) { Remove-Item $sysoPath -Force }
     foreach ($v in @("GOOS","GOARCH","CGO_ENABLED","CC")) { Remove-Item "Env:\$v" -ErrorAction SilentlyContinue }
 
     if ($code -ne 0) {

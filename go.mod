@@ -5,6 +5,7 @@ go 1.26
 require (
 	fyne.io/fyne/v2 v2.7.4
 	github.com/spf13/cobra v1.10.2
+	github.com/ulikunitz/xz v0.5.15
 	modernc.org/sqlite v1.51.0
 )
 

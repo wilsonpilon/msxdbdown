@@ -2,6 +2,8 @@ package main
 
 import (
 	"archive/zip"
+	"bytes"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"image/color"
@@ -11,6 +13,8 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -22,7 +26,9 @@ import (
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 	"github.com/spf13/cobra"
+	"github.com/ulikunitz/xz/lzma"
 	"msxdbdown/internal/about"
+	"msxdbdown/internal/appicon"
 	"msxdbdown/internal/configui"
 	"msxdbdown/internal/settingsdb"
 	"msxdbdown/internal/uiprefs"
@@ -35,7 +41,9 @@ const (
 
 	viewCatalogPlaceholder = "catalog"
 	viewMSXRomDBUpdate     = "db.msxromdb"
+	viewMSXRomDBBrowse     = "db.msxromdb.browse"
 	viewFileHunterUpdate   = "db.filehunter"
+	viewFileHunterBrowse   = "db.filehunter.browse"
 	viewCleanDownloads     = "db.clean"
 
 	statusInfo  = "INFO"
@@ -45,168 +53,274 @@ const (
 
 var i18n = map[uiprefs.LanguageCode]map[string]string{
 	uiprefs.LangPT: {
-		"appTitle":                "MSX DB Down - Catálogo",
-		"menuFile":                "Arquivo",
-		"menuExit":                "Sair",
-		"menuSetup":               "Configuração",
-		"menuConfigUI":            "Configurar UI",
-		"menuDatabase":            "Banco de Dados",
-		"menuUpdateMSXRomDB":      "Atualizar MSX RomDB",
-		"menuUpdateFileHunter":    "Atualizar File-Hunter",
-		"menuHelp":                "Ajuda",
-		"menuAbout":               "Sobre",
-		"language":                "Idioma",
-		"theme":                   "Tema",
-		"panelControls":           "Preferências",
-		"panelPreview":            "Área principal",
-		"previewText":             "Catálogo visual (em breve)\n\nAqui serão exibidos jogos, músicas, imagens e metadados.",
-		"statusReady":             "Pronto.",
-		"statusLogTitle":          "Status e depuração",
-		"configTitle":             "Configurar Interface",
-		"configFontFamily":        "Família de Fonte",
-		"configFontSize":          "Tamanho de Fonte",
-		"configFontSizeValue":     "%d px",
-		"configDensity":           "Densidade de Layout",
-		"configMSXRomDBURL":       "MSX ROM DB URL",
-		"configFileHunterURL":     "File-Hunter URL",
-		"configFileHunterSHAURL":  "File-Hunter SHA URL",
-		"configTabUI":             "UI",
-		"configTabURLs":           "URLs",
-		"configTabSQLite":         "SQLite",
-		"configCurrentDBPath":     "Banco atual",
-		"configCatalogDBLocation": "Local do banco de configuracoes",
-		"configCatalogDBPath":     "Caminho do arquivo",
-		"configDBLocationLocal":   "Diretorio local (data/msxdbdown.db)",
-		"configDBLocationAppData": "Pasta de configuracao do usuario (%APPDATA% no Windows, ~/.config no Linux)",
-		"configCreateCatalogDB":   "Criar banco inicial",
-		"configDBPathError":       "Falha ao resolver caminho",
-		"configDBSwitchTitle":     "Alterar local do banco",
-		"configDBSwitchAskMove":   "Banco atual:\n%s\n\nNovo local:\n%s\n\nDeseja mover o banco atual para o novo local?",
-		"configDBSwitchAskNew":    "Deseja criar um banco novo e zerado em:\n%s",
-		"configDBExistsTitle":     "Banco ja existe",
-		"configDBExistsConfirm":   "O banco ja existe em:\n%s\n\nDeseja recriar um banco zerado?",
-		"configDBCreatedTitle":    "Banco inicial criado",
-		"configDBCreatedMessage":  "Banco SQLite pronto em:\n%s",
-		"configOK":                "Aplicar",
-		"configCancel":            "Cancelar",
-		"dbSourceURL":             "Endereço",
-		"dbSourceSHAURL":          "SHA URL",
-		"dbUpdateButton":          "Atualizar",
-		"dbDownloadStarted":       "Iniciando download para download/ ...",
-		"dbDownloadDone":          "Download concluído",
-		"dbDownloadFailed":        "Falha no download",
-		"dbExtractStarted":        "Descompactando arquivo em download/ ...",
-		"dbExtractDone":           "Descompactação concluída",
-		"dbExtractFailed":         "Falha na descompactação",
-		"dbImportStarted":         "Importando SQL para o banco SQLite atual ...",
-		"dbImportDone":            "Importação concluída",
-		"dbImportFailed":          "Falha na importação SQL",
-		"dbImportSQLNotFound":     "Arquivo SQL não encontrado após descompactação",
-		"menuCleanDownloads":      "Limpar Downloads",
-		"cleanDownloadsTitle":     "Limpar Downloads",
-		"cleanDownloadsLabel":     "Arquivos em download/:",
-		"cleanDownloadsButton":    "Limpar",
-		"cleanDownloadsNoFiles":   "Nenhum arquivo em download/",
-		"cleanDownloadsDone":      "Arquivos deletados com sucesso",
-		"cleanDownloadsFailed":    "Erro ao deletar arquivos",
-		"aboutTitle":              "Sobre",
-		"aboutVersion":            "Versão",
-		"aboutBuild":              "Build",
-		"aboutDate":               "Data",
-		"aboutTime":               "Hora",
-		"aboutCopyright1":         "(C) WIB Projetos Ltda.",
-		"aboutCopyright2":         "(C) Cybernostra, Inc.",
-		"aboutWebsite":            "www.cybernostra.com",
-		"aboutYears":              "1972 - %d",
-		"aboutClose":              "Fechar",
-		"cliShort":                "Baixador de banco de dados MSX e catalogo visual",
-		"cliLong":                 "MSX DB Down baixa bancos de software MSX, enriquece itens com metadados (imagens, musica, video, informacoes de lancamento) e fornece um catalogo visual como frontend para emuladores MSX.\n\nExecutar sem subcomando abre a interface grafica.",
-		"cliFlagLang":             "Define idioma da UI: pt | en | es | nl | it",
-		"cliFlagTheme":            "Define tema da UI: system | light | dark",
-		"cliFlagDebug":            "Mostra mensagens extras de depuracao no painel de log",
-		"cliVersionShort":         "Mostra informacoes de versao",
+		"appTitle":                    "MSX DB Down - Catálogo",
+		"menuFile":                    "Arquivo",
+		"menuExit":                    "Sair",
+		"menuSetup":                   "Configuração",
+		"menuConfigUI":                "Configurar UI",
+		"menuDatabase":                "Banco de Dados",
+		"menuUpdateMSXRomDB":          "Atualizar MSX RomDB",
+		"menuBrowseMSXRomDB":          "Browse MSX Rom DB",
+		"menuUpdateFileHunter":        "Atualizar File-Hunter",
+		"menuBrowseFileHunter":        "Browse File-Hunter",
+		"fhImportButton":              "Importar para o Banco",
+		"fhImportStarted":             "Iniciando importação do catálogo File-Hunter ...",
+		"fhImportDone":                "Importação concluída",
+		"fhImportFailed":              "Falha na importação",
+		"fhImportNoAllFiles":          "Arquivo allfiles.txt não encontrado em download/",
+		"fhImportNoSHA1":              "Arquivo sha1sums.txt não encontrado em download/",
+		"fhBrowseTitle":               "Catálogo File-Hunter",
+		"fhBrowseNoData":              "Nenhum dado importado. Use 'Atualizar File-Hunter' para baixar e importar o catálogo.",
+		"fhBrowseCategoryLabel":       "Categorias",
+		"fhBrowseAllCategories":       "(Todas as categorias)",
+		"fhBrowseSearchLabel":         "Buscar arquivo",
+		"fhBrowseSearchBtn":           "Buscar",
+		"fhBrowseExtFilter":           "Extensão",
+		"fhBrowseExtAll":              "Todas",
+		"fhBrowseResults":             "Resultados: %d",
+		"fhBrowseColName":             "Nome",
+		"fhBrowseColExt":              "Ext",
+		"fhBrowseColSHA1":             "SHA1",
+		"fhBrowseColPath":             "Caminho completo",
+		"fhBrowseSHA1Copied":          "SHA1 copiado para a área de transferência",
+		"fhBrowseSHA1Empty":           "Este arquivo não possui SHA1",
+		"fhBrowseClearPath":           "← Voltar",
+		"fhBrowsePathAll":             "Todas",
+		"menuHelp":                    "Ajuda",
+		"menuAbout":                   "Sobre",
+		"language":                    "Idioma",
+		"theme":                       "Tema",
+		"panelControls":               "Preferências",
+		"panelPreview":                "Área principal",
+		"previewText":                 "Catálogo visual (em breve)\n\nAqui serão exibidos jogos, músicas, imagens e metadados.",
+		"statusReady":                 "Pronto.",
+		"statusLogTitle":              "Status e depuração",
+		"configTitle":                 "Configurar Interface",
+		"configFontFamily":            "Família de Fonte",
+		"configFontSize":              "Tamanho de Fonte",
+		"configFontSizeValue":         "%d px",
+		"configDensity":               "Densidade de Layout",
+		"configMSXRomDBURL":           "MSX ROM DB URL",
+		"configFileHunterURL":         "File-Hunter URL",
+		"configFileHunterSHAURL":      "File-Hunter SHA URL",
+		"configTabUI":                 "UI",
+		"configTabURLs":               "URLs",
+		"configTabSQLite":             "SQLite",
+		"configCurrentDBPath":         "Banco atual",
+		"configCatalogDBLocation":     "Local do banco de configuracoes",
+		"configCatalogDBPath":         "Caminho do arquivo",
+		"configDBLocationLocal":       "Diretorio local (data/msxdbdown.db)",
+		"configDBLocationAppData":     "Pasta de configuracao do usuario (%APPDATA% no Windows, ~/.config no Linux)",
+		"configCreateCatalogDB":       "Criar banco inicial",
+		"configDBPathError":           "Falha ao resolver caminho",
+		"configDBSwitchTitle":         "Alterar local do banco",
+		"configDBSwitchAskMove":       "Banco atual:\n%s\n\nNovo local:\n%s\n\nDeseja mover o banco atual para o novo local?",
+		"configDBSwitchAskNew":        "Deseja criar um banco novo e zerado em:\n%s",
+		"configDBExistsTitle":         "Banco ja existe",
+		"configDBExistsConfirm":       "O banco ja existe em:\n%s\n\nDeseja recriar um banco zerado?",
+		"configDBCreatedTitle":        "Banco inicial criado",
+		"configDBCreatedMessage":      "Banco SQLite pronto em:\n%s",
+		"configOK":                    "Aplicar",
+		"configCancel":                "Cancelar",
+		"dbSourceURL":                 "Endereço",
+		"dbSourceSHAURL":              "SHA URL",
+		"dbUpdateButton":              "Atualizar",
+		"dbDownloadStarted":           "Iniciando download para download/ ...",
+		"dbDownloadDone":              "Download concluído",
+		"dbDownloadFailed":            "Falha no download",
+		"dbExtractStarted":            "Descompactando arquivo em download/ ...",
+		"dbExtractDone":               "Descompactação concluída",
+		"dbExtractFailed":             "Falha na descompactação",
+		"dbImportStarted":             "Importando SQL para o banco SQLite atual ...",
+		"dbImportDone":                "Importação concluída",
+		"dbImportFailed":              "Falha na importação SQL",
+		"dbImportSQLNotFound":         "Arquivo SQL não encontrado após descompactação",
+		"dbBrowsePrompt":              "Nome do jogo",
+		"dbBrowseSearch":              "Search",
+		"dbBrowseOpenDetails":         "Abrir detalhes",
+		"dbBrowseSearchPlaceholder":   "Digite parte do nome do jogo",
+		"dbBrowseSearchFailed":        "Falha na busca do MSX Rom DB",
+		"dbBrowseOpenSelectFirst":     "Selecione um jogo antes de abrir detalhes",
+		"dbBrowseResults":             "Resultados: %d",
+		"dbBrowseNoResults":           "Nenhum jogo encontrado",
+		"dbBrowseColName":             "Jogo",
+		"dbBrowseColYear":             "Ano",
+		"dbBrowseColPlatform":         "Plataforma",
+		"dbBrowseColCompany":          "Companhia",
+		"dbBrowseOpenDetailsFailed":   "Falha ao abrir detalhes do jogo",
+		"dbBrowseDetailsTitle":        "Detalhes do jogo",
+		"dbBrowseDetailsEmpty":        "Nenhum metadado encontrado",
+		"dbBrowseDoubleClickHint":     "Dica: duplo clique em uma linha para abrir detalhes",
+		"dbBrowseVersionsTitle":       "Versoes e SHA1",
+		"dbBrowseVersionColType":      "Tipo",
+		"dbBrowseVersionColVersion":   "Versao",
+		"dbBrowseVersionColSHA1":      "SHA1",
+		"dbBrowseVersionColFileSize":  "Tamanho",
+		"dbBrowseVersionColDump":      "Dump",
+		"dbBrowseVersionColActive":    "Ativo",
+		"dbBrowseVersionColPreferred": "Preferido",
+		"dbBrowseVersionColFound":     "Encontrado",
+		"dbBrowseVersionNone":         "(nenhum)",
+		"dbBrowseSHA1Copied":          "SHA1 copiado para a area de transferencia",
+		"dbBrowseSHA1Empty":           "Esta versao nao possui SHA1 para copiar",
+		"menuCleanDownloads":          "Limpar Downloads",
+		"cleanDownloadsTitle":         "Limpar Downloads",
+		"cleanDownloadsLabel":         "Arquivos em download/:",
+		"cleanDownloadsButton":        "Limpar",
+		"cleanDownloadsNoFiles":       "Nenhum arquivo em download/",
+		"cleanDownloadsDone":          "Arquivos deletados com sucesso",
+		"cleanDownloadsFailed":        "Erro ao deletar arquivos",
+		"aboutTitle":                  "Sobre",
+		"aboutVersion":                "Versão",
+		"aboutBuild":                  "Build",
+		"aboutDate":                   "Data",
+		"aboutTime":                   "Hora",
+		"aboutCopyright1":             "(C) WIB Projetos Ltda.",
+		"aboutCopyright2":             "(C) Cybernostra, Inc.",
+		"aboutWebsite":                "www.cybernostra.com",
+		"aboutYears":                  "1972 - %d",
+		"aboutClose":                  "Fechar",
+		"cliShort":                    "Baixador de banco de dados MSX e catalogo visual",
+		"cliLong":                     "MSX DB Down baixa bancos de software MSX, enriquece itens com metadados (imagens, musica, video, informacoes de lancamento) e fornece um catalogo visual como frontend para emuladores MSX.\n\nExecutar sem subcomando abre a interface grafica.",
+		"cliFlagLang":                 "Define idioma da UI: pt | en | es | nl | it",
+		"cliFlagTheme":                "Define tema da UI: system | light | dark",
+		"cliFlagDebug":                "Mostra mensagens extras de depuracao no painel de log",
+		"cliVersionShort":             "Mostra informacoes de versao",
 	},
 	uiprefs.LangEN: {
-		"appTitle":                "MSX DB Down - Catalog",
-		"menuFile":                "File",
-		"menuExit":                "Exit",
-		"menuSetup":               "Setup",
-		"menuConfigUI":            "Config UI",
-		"menuDatabase":            "Database",
-		"menuUpdateMSXRomDB":      "Update MSX RomDB",
-		"menuUpdateFileHunter":    "Update File-Hunter",
-		"menuHelp":                "Help",
-		"menuAbout":               "About",
-		"language":                "Language",
-		"theme":                   "Theme",
-		"panelControls":           "Preferences",
-		"panelPreview":            "Main area",
-		"previewText":             "Visual catalog (coming soon)\n\nGames, music, images and metadata will be shown here.",
-		"statusReady":             "Ready.",
-		"statusLogTitle":          "Status and debug",
-		"configTitle":             "Config UI",
-		"configFontFamily":        "Font Family",
-		"configFontSize":          "Font Size",
-		"configFontSizeValue":     "%d px",
-		"configDensity":           "Layout Density",
-		"configMSXRomDBURL":       "MSX ROM DB URL",
-		"configFileHunterURL":     "File-Hunter URL",
-		"configFileHunterSHAURL":  "File-Hunter SHA URL",
-		"configTabUI":             "UI",
-		"configTabURLs":           "URLs",
-		"configTabSQLite":         "SQLite",
-		"configCurrentDBPath":     "Current database",
-		"configCatalogDBLocation": "Settings database location",
-		"configCatalogDBPath":     "Database file path",
-		"configDBLocationLocal":   "Local directory (data/msxdbdown.db)",
-		"configDBLocationAppData": "User config directory (%APPDATA% on Windows, ~/.config on Linux)",
-		"configCreateCatalogDB":   "Create initial database",
-		"configDBPathError":       "Could not resolve path",
-		"configDBSwitchTitle":     "Switch database location",
-		"configDBSwitchAskMove":   "Current database:\n%s\n\nTarget location:\n%s\n\nDo you want to move the current database?",
-		"configDBSwitchAskNew":    "Do you want to create a new empty database at:\n%s",
-		"configDBExistsTitle":     "Database already exists",
-		"configDBExistsConfirm":   "Database already exists at:\n%s\n\nDo you want to recreate an empty database?",
-		"configDBCreatedTitle":    "Initial database created",
-		"configDBCreatedMessage":  "SQLite database ready at:\n%s",
-		"configOK":                "Apply",
-		"configCancel":            "Cancel",
-		"dbSourceURL":             "Address",
-		"dbSourceSHAURL":          "SHA URL",
-		"dbUpdateButton":          "Update",
-		"dbDownloadStarted":       "Starting download to download/ ...",
-		"dbDownloadDone":          "Download completed",
-		"dbDownloadFailed":        "Download failed",
-		"dbExtractStarted":        "Extracting file into download/ ...",
-		"dbExtractDone":           "Extraction completed",
-		"dbExtractFailed":         "Extraction failed",
-		"dbImportStarted":         "Importing SQL into the current SQLite database ...",
-		"dbImportDone":            "Import finished",
-		"dbImportFailed":          "SQL import failed",
-		"dbImportSQLNotFound":     "SQL file not found after extraction",
-		"menuCleanDownloads":      "Clean Downloads",
-		"cleanDownloadsTitle":     "Clean Downloads",
-		"cleanDownloadsLabel":     "Files in download/:",
-		"cleanDownloadsButton":    "Clean",
-		"cleanDownloadsNoFiles":   "No files in download/",
-		"cleanDownloadsDone":      "Files deleted successfully",
-		"cleanDownloadsFailed":    "Error deleting files",
-		"aboutTitle":              "About",
-		"aboutVersion":            "Version",
-		"aboutBuild":              "Build",
-		"aboutDate":               "Date",
-		"aboutTime":               "Time",
-		"aboutCopyright1":         "(C) WIB Projetos Ltda.",
-		"aboutCopyright2":         "(C) Cybernostra, Inc.",
-		"aboutWebsite":            "www.cybernostra.com",
-		"aboutYears":              "1972 - %d",
-		"aboutClose":              "Close",
-		"cliShort":                "MSX Database Downloader and Visual Catalog",
-		"cliLong":                 "MSX DB Down downloads MSX software databases, enriches entries with metadata (images, music, video, release info) and provides a visual catalog that acts as a frontend for MSX emulators.\n\nRunning without a sub-command opens the graphical interface.",
-		"cliFlagLang":             "Override UI language: pt | en | es | nl | it",
-		"cliFlagTheme":            "Override UI theme: system | light | dark",
-		"cliFlagDebug":            "Print extra debug messages in the log panel",
-		"cliVersionShort":         "Print version information",
+		"appTitle":                    "MSX DB Down - Catalog",
+		"menuFile":                    "File",
+		"menuExit":                    "Exit",
+		"menuSetup":                   "Setup",
+		"menuConfigUI":                "Config UI",
+		"menuDatabase":                "Database",
+		"menuUpdateMSXRomDB":          "Update MSX RomDB",
+		"menuBrowseMSXRomDB":          "Browse MSX Rom DB",
+		"menuUpdateFileHunter":        "Update File-Hunter",
+		"menuBrowseFileHunter":        "Browse File-Hunter",
+		"fhImportButton":              "Import to Database",
+		"fhImportStarted":             "Starting File-Hunter catalog import ...",
+		"fhImportDone":                "Import completed",
+		"fhImportFailed":              "Import failed",
+		"fhImportNoAllFiles":          "allfiles.txt not found in download/",
+		"fhImportNoSHA1":              "sha1sums.txt not found in download/",
+		"fhBrowseTitle":               "File-Hunter Catalog",
+		"fhBrowseNoData":              "No data imported. Use 'Update File-Hunter' to download and import the catalog.",
+		"fhBrowseCategoryLabel":       "Categories",
+		"fhBrowseAllCategories":       "(All categories)",
+		"fhBrowseSearchLabel":         "Search file",
+		"fhBrowseSearchBtn":           "Search",
+		"fhBrowseExtFilter":           "Extension",
+		"fhBrowseExtAll":              "All",
+		"fhBrowseResults":             "Results: %d",
+		"fhBrowseColName":             "Name",
+		"fhBrowseColExt":              "Ext",
+		"fhBrowseColSHA1":             "SHA1",
+		"fhBrowseColPath":             "Full Path",
+		"fhBrowseSHA1Copied":          "SHA1 copied to clipboard",
+		"fhBrowseSHA1Empty":           "This file has no SHA1",
+		"fhBrowseClearPath":           "← Back",
+		"fhBrowsePathAll":             "All",
+		"menuHelp":                    "Help",
+		"menuAbout":                   "About",
+		"language":                    "Language",
+		"theme":                       "Theme",
+		"panelControls":               "Preferences",
+		"panelPreview":                "Main area",
+		"previewText":                 "Visual catalog (coming soon)\n\nGames, music, images and metadata will be shown here.",
+		"statusReady":                 "Ready.",
+		"statusLogTitle":              "Status and debug",
+		"configTitle":                 "Config UI",
+		"configFontFamily":            "Font Family",
+		"configFontSize":              "Font Size",
+		"configFontSizeValue":         "%d px",
+		"configDensity":               "Layout Density",
+		"configMSXRomDBURL":           "MSX ROM DB URL",
+		"configFileHunterURL":         "File-Hunter URL",
+		"configFileHunterSHAURL":      "File-Hunter SHA URL",
+		"configTabUI":                 "UI",
+		"configTabURLs":               "URLs",
+		"configTabSQLite":             "SQLite",
+		"configCurrentDBPath":         "Current database",
+		"configCatalogDBLocation":     "Settings database location",
+		"configCatalogDBPath":         "Database file path",
+		"configDBLocationLocal":       "Local directory (data/msxdbdown.db)",
+		"configDBLocationAppData":     "User config directory (%APPDATA% on Windows, ~/.config on Linux)",
+		"configCreateCatalogDB":       "Create initial database",
+		"configDBPathError":           "Could not resolve path",
+		"configDBSwitchTitle":         "Switch database location",
+		"configDBSwitchAskMove":       "Current database:\n%s\n\nTarget location:\n%s\n\nDo you want to move the current database?",
+		"configDBSwitchAskNew":        "Do you want to create a new empty database at:\n%s",
+		"configDBExistsTitle":         "Database already exists",
+		"configDBExistsConfirm":       "Database already exists at:\n%s\n\nDo you want to recreate an empty database?",
+		"configDBCreatedTitle":        "Initial database created",
+		"configDBCreatedMessage":      "SQLite database ready at:\n%s",
+		"configOK":                    "Apply",
+		"configCancel":                "Cancel",
+		"dbSourceURL":                 "Address",
+		"dbSourceSHAURL":              "SHA URL",
+		"dbUpdateButton":              "Update",
+		"dbDownloadStarted":           "Starting download to download/ ...",
+		"dbDownloadDone":              "Download completed",
+		"dbDownloadFailed":            "Download failed",
+		"dbExtractStarted":            "Extracting file into download/ ...",
+		"dbExtractDone":               "Extraction completed",
+		"dbExtractFailed":             "Extraction failed",
+		"dbImportStarted":             "Importing SQL into the current SQLite database ...",
+		"dbImportDone":                "Import finished",
+		"dbImportFailed":              "SQL import failed",
+		"dbImportSQLNotFound":         "SQL file not found after extraction",
+		"dbBrowsePrompt":              "Game name",
+		"dbBrowseSearch":              "Search",
+		"dbBrowseOpenDetails":         "Open details",
+		"dbBrowseSearchPlaceholder":   "Type part of the game name",
+		"dbBrowseSearchFailed":        "MSX Rom DB search failed",
+		"dbBrowseOpenSelectFirst":     "Select a game before opening details",
+		"dbBrowseResults":             "Results: %d",
+		"dbBrowseNoResults":           "No games found",
+		"dbBrowseColName":             "Game",
+		"dbBrowseColYear":             "Year",
+		"dbBrowseColPlatform":         "Platform",
+		"dbBrowseColCompany":          "Company",
+		"dbBrowseOpenDetailsFailed":   "Failed to open game details",
+		"dbBrowseDetailsTitle":        "Game details",
+		"dbBrowseDetailsEmpty":        "No metadata found",
+		"dbBrowseDoubleClickHint":     "Hint: double-click a row to open details",
+		"dbBrowseVersionsTitle":       "Versions and SHA1",
+		"dbBrowseVersionColType":      "Type",
+		"dbBrowseVersionColVersion":   "Version",
+		"dbBrowseVersionColSHA1":      "SHA1",
+		"dbBrowseVersionColFileSize":  "FileSize",
+		"dbBrowseVersionColDump":      "Dump",
+		"dbBrowseVersionColActive":    "Active",
+		"dbBrowseVersionColPreferred": "Preferred",
+		"dbBrowseVersionColFound":     "Found",
+		"dbBrowseVersionNone":         "(none)",
+		"dbBrowseSHA1Copied":          "SHA1 copied to clipboard",
+		"dbBrowseSHA1Empty":           "This version has no SHA1 to copy",
+		"menuCleanDownloads":          "Clean Downloads",
+		"cleanDownloadsTitle":         "Clean Downloads",
+		"cleanDownloadsLabel":         "Files in download/:",
+		"cleanDownloadsButton":        "Clean",
+		"cleanDownloadsNoFiles":       "No files in download/",
+		"cleanDownloadsDone":          "Files deleted successfully",
+		"cleanDownloadsFailed":        "Error deleting files",
+		"aboutTitle":                  "About",
+		"aboutVersion":                "Version",
+		"aboutBuild":                  "Build",
+		"aboutDate":                   "Date",
+		"aboutTime":                   "Time",
+		"aboutCopyright1":             "(C) WIB Projetos Ltda.",
+		"aboutCopyright2":             "(C) Cybernostra, Inc.",
+		"aboutWebsite":                "www.cybernostra.com",
+		"aboutYears":                  "1972 - %d",
+		"aboutClose":                  "Close",
+		"cliShort":                    "MSX Database Downloader and Visual Catalog",
+		"cliLong":                     "MSX DB Down downloads MSX software databases, enriches entries with metadata (images, music, video, release info) and provides a visual catalog that acts as a frontend for MSX emulators.\n\nRunning without a sub-command opens the graphical interface.",
+		"cliFlagLang":                 "Override UI language: pt | en | es | nl | it",
+		"cliFlagTheme":                "Override UI theme: system | light | dark",
+		"cliFlagDebug":                "Print extra debug messages in the log panel",
+		"cliVersionShort":             "Print version information",
 	},
 	uiprefs.LangES: {
 		"appTitle":               "MSX DB Down - Catálogo",
@@ -346,7 +460,7 @@ var i18n = map[uiprefs.LanguageCode]map[string]string{
 		"theme":                  "Tema",
 		"panelControls":          "Preferenze",
 		"panelPreview":           "Area principale",
-		"previewText":            "Catalogo visivo (prossimamente)\n\nQui verranno mostrati giochi, musica, immagini e metadati.",
+		"previewText":            "Catalogo visuale (prossimamente)\n\nQui verranno mostrati giochi, musica, immagini e metadati.",
 		"statusReady":            "Pronto.",
 		"statusLogTitle":         "Stato e debug",
 		"configTitle":            "Configura interfaccia",
@@ -453,6 +567,7 @@ func buildRootCmd(cliLang uiprefs.LanguageCode) *cobra.Command {
 			_ = store.Set(uiprefs.PrefCatalogDBLocation, dbLocation)
 
 			application := app.NewWithID("com.msxdbdown.gui")
+			application.SetIcon(appicon.Resource())
 
 			// CLI flags override stored settings and are persisted in SQLite.
 			if langFlag != "" {
@@ -570,6 +685,7 @@ func newMainUI(a fyne.App, store *settingsdb.Store, dbLocation, dbPath string) *
 	})
 
 	ui.currentLanguage = uiprefs.ReadLanguage(ui.getSetting(prefLanguage))
+	ui.window.SetIcon(appicon.Resource())
 	ui.window.Resize(fyne.NewSize(1180, 760))
 	ui.window.CenterOnScreen()
 
@@ -686,11 +802,17 @@ func (ui *mainUI) applyAll() {
 }
 
 func (ui *mainUI) renderActiveView() {
+	ui.window.Canvas().SetOnTypedKey(nil)
+
 	switch ui.activeView {
 	case viewMSXRomDBUpdate:
 		ui.showMSXRomDBUpdateView()
+	case viewMSXRomDBBrowse:
+		ui.showMSXRomDBBrowseView()
 	case viewFileHunterUpdate:
 		ui.showFileHunterUpdateView()
+	case viewFileHunterBrowse:
+		ui.showFileHunterBrowseView()
 	case viewCleanDownloads:
 		ui.showCleanDownloadsView()
 	default:
@@ -699,6 +821,406 @@ func (ui *mainUI) renderActiveView() {
 		ui.previewText.ParseMarkdown(ui.t("previewText"))
 		ui.previewCard.SetContent(container.NewPadded(ui.previewText))
 	}
+}
+
+func (ui *mainUI) showMSXRomDBBrowseView() {
+	ui.activeView = viewMSXRomDBBrowse
+
+	searchEntry := widget.NewEntry()
+	searchEntry.SetPlaceHolder(ui.t("dbBrowseSearchPlaceholder"))
+	resultsLabel := widget.NewLabel(fmt.Sprintf(ui.t("dbBrowseResults"), 0))
+
+	headers := []string{
+		ui.t("dbBrowseColName"),
+		ui.t("dbBrowseColYear"),
+		ui.t("dbBrowseColPlatform"),
+		ui.t("dbBrowseColCompany"),
+	}
+	rows := []settingsdb.RomInfoSearchRow{}
+	sortCol := -1
+	sortAsc := true
+	selectedRow := -1
+	lastSelectedRow := -1
+	var lastSelectedAt time.Time
+
+	openDetails := func() {
+		if selectedRow < 0 || selectedRow >= len(rows) {
+			ui.appendLog(statusWarn, "DB", ui.t("dbBrowseOpenSelectFirst"))
+			return
+		}
+		ui.openMSXRomDBDetailsDialog(rows[selectedRow])
+	}
+
+	headerLabel := func(col int) string {
+		if col != sortCol {
+			return headers[col]
+		}
+		if sortAsc {
+			return headers[col] + " ▲"
+		}
+		return headers[col] + " ▼"
+	}
+
+	sortRows := func() {
+		if sortCol < 0 || sortCol >= len(headers) || len(rows) < 2 {
+			return
+		}
+		sort.SliceStable(rows, func(i, j int) bool {
+			left := rows[i]
+			right := rows[j]
+			var li, rj string
+			switch sortCol {
+			case 0:
+				li, rj = left.GameName, right.GameName
+			case 1:
+				li, rj = left.Year, right.Year
+			case 2:
+				li, rj = left.Platform, right.Platform
+			default:
+				li, rj = left.Company, right.Company
+			}
+			cmp := strings.Compare(strings.ToLower(li), strings.ToLower(rj))
+			if sortCol == 1 {
+				cmp = compareYearValues(li, rj)
+			}
+			if cmp == 0 {
+				cmp = strings.Compare(strings.ToLower(left.GameName), strings.ToLower(right.GameName))
+			}
+			if sortAsc {
+				return cmp < 0
+			}
+			return cmp > 0
+		})
+	}
+
+	resultTable := widget.NewTable(
+		func() (int, int) { return len(rows) + 1, len(headers) },
+		func() fyne.CanvasObject {
+			txt := canvas.NewText("", color.Black)
+			txt.TextSize = theme.TextSize()
+			return container.NewPadded(txt)
+		},
+		func(id widget.TableCellID, obj fyne.CanvasObject) {
+			cell := obj.(*fyne.Container)
+			txt := cell.Objects[0].(*canvas.Text)
+			txt.Color = theme.ForegroundColor()
+			txt.TextStyle = fyne.TextStyle{}
+
+			if id.Row == 0 {
+				txt.Text = headerLabel(id.Col)
+				txt.TextStyle = fyne.TextStyle{Bold: true}
+				txt.Refresh()
+				return
+			}
+			if len(rows) == 0 {
+				if id.Col == 0 {
+					txt.Text = ui.t("dbBrowseNoResults")
+				} else {
+					txt.Text = ""
+				}
+				txt.Refresh()
+				return
+			}
+			r := rows[id.Row-1]
+			switch id.Col {
+			case 0:
+				txt.Text = r.GameName
+			case 1:
+				txt.Text = r.Year
+			case 2:
+				txt.Text = r.Platform
+			case 3:
+				txt.Text = r.Company
+			}
+			txt.Refresh()
+		},
+	)
+	resultTable.SetColumnWidth(0, 380)
+	resultTable.SetColumnWidth(1, 65)
+	resultTable.SetColumnWidth(2, 130)
+	resultTable.SetColumnWidth(3, 200)
+
+	resultTable.OnSelected = func(id widget.TableCellID) {
+		if id.Row == 0 {
+			if id.Col == sortCol {
+				sortAsc = !sortAsc
+			} else {
+				sortCol = id.Col
+				sortAsc = true
+			}
+			sortRows()
+			resultTable.Refresh()
+			return
+		}
+		now := time.Now()
+		newRow := id.Row - 1
+		wasSelected := (selectedRow == newRow) && (lastSelectedRow == newRow)
+		selectedRow = newRow
+		if wasSelected && now.Sub(lastSelectedAt) < 400*time.Millisecond {
+			openDetails()
+		}
+		lastSelectedRow = newRow
+		lastSelectedAt = now
+	}
+
+	doSearch := func() {
+		query := strings.TrimSpace(searchEntry.Text)
+		results, err := ui.store.SearchRomInfoByName(query, 500)
+		if err != nil {
+			ui.appendLog(statusError, "DB", fmt.Sprintf("%s: %v", ui.t("dbBrowseSearchFailed"), err))
+			return
+		}
+		rows = results
+		sortCol = -1
+		sortAsc = true
+		selectedRow = -1
+		resultTable.Refresh()
+		resultsLabel.SetText(fmt.Sprintf(ui.t("dbBrowseResults"), len(rows)))
+	}
+
+	searchBtn := widget.NewButton(ui.t("dbBrowseSearch"), func() { doSearch() })
+	openDetailsBtn := widget.NewButton(ui.t("dbBrowseOpenDetails"), func() { openDetails() })
+	searchEntry.OnSubmitted = func(_ string) { doSearch() }
+
+	hint := widget.NewLabelWithStyle(ui.t("dbBrowseDoubleClickHint"), fyne.TextAlignLeading, fyne.TextStyle{Italic: true})
+
+	searchRow := container.NewBorder(nil, nil, nil,
+		container.NewHBox(searchBtn, openDetailsBtn, resultsLabel),
+		searchEntry,
+	)
+
+	ui.previewCard.Title = ui.t("menuBrowseMSXRomDB")
+	ui.previewCard.SetContent(container.NewPadded(container.NewBorder(
+		container.NewVBox(
+			widget.NewLabelWithStyle(ui.t("dbBrowsePrompt"), fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+			searchRow,
+			hint,
+		),
+		nil, nil, nil,
+		container.NewVScroll(resultTable),
+	)))
+	ui.previewCard.Refresh()
+}
+
+func (ui *mainUI) openMSXRomDBDetailsDialog(row settingsdb.RomInfoSearchRow) {
+	title := row.GameName
+
+	details, err := ui.store.GetRomInfoDetailsByGameID(row.GameID)
+	if err != nil {
+		ui.appendLog(statusError, "DB", fmt.Sprintf("%s: %v", ui.t("dbBrowseOpenDetailsFailed"), err))
+		dialog.ShowError(err, ui.window)
+		return
+	}
+
+	versions, err := ui.store.GetRomVersionsByGameID(row.GameID)
+	if err != nil {
+		ui.appendLog(statusError, "DB", fmt.Sprintf("%s: %v", ui.t("dbBrowseOpenDetailsFailed"), err))
+		dialog.ShowError(err, ui.window)
+		return
+	}
+
+	// Build sorted details text
+	keys := make([]string, 0, len(details))
+	for k := range details {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	var b strings.Builder
+	for _, k := range keys {
+		v := strings.TrimSpace(details[k])
+		if v == "" {
+			continue
+		}
+		b.WriteString(fmt.Sprintf("%-26s %s", k+":", v))
+		b.WriteString("\n")
+	}
+	if b.Len() == 0 {
+		b.WriteString(ui.t("dbBrowseDetailsEmpty"))
+	}
+
+	detailEntry := widget.NewMultiLineEntry()
+	detailEntry.SetText(strings.TrimSpace(b.String()))
+	detailEntry.Wrapping = fyne.TextWrapWord
+	detailEntry.Disable()
+
+	versionHeaders := []string{
+		ui.t("dbBrowseVersionColType"),
+		ui.t("dbBrowseVersionColVersion"),
+		ui.t("dbBrowseVersionColSHA1"),
+		ui.t("dbBrowseVersionColFileSize"),
+		ui.t("dbBrowseVersionColDump"),
+		ui.t("dbBrowseVersionColActive"),
+		ui.t("dbBrowseVersionColPreferred"),
+		ui.t("dbBrowseVersionColFound"),
+	}
+
+	colorGreen := color.NRGBA{R: 0x22, G: 0xAA, B: 0x44, A: 0xFF}
+	colorRed := color.NRGBA{R: 0xCC, G: 0x33, B: 0x33, A: 0xFF}
+
+	boolCell := func(val string) (string, color.Color) {
+		if strings.TrimSpace(val) == "1" {
+			return "✓", colorGreen
+		}
+		return "—", colorRed
+	}
+
+	versionTable := widget.NewTable(
+		func() (int, int) {
+			if len(versions) == 0 {
+				return 2, len(versionHeaders)
+			}
+			return len(versions) + 1, len(versionHeaders)
+		},
+		func() fyne.CanvasObject {
+			txt := canvas.NewText("", color.Black)
+			txt.TextSize = theme.TextSize()
+			return container.NewPadded(txt)
+		},
+		func(id widget.TableCellID, obj fyne.CanvasObject) {
+			cell := obj.(*fyne.Container)
+			txt := cell.Objects[0].(*canvas.Text)
+			txt.Color = theme.ForegroundColor()
+			txt.TextStyle = fyne.TextStyle{}
+
+			if id.Row == 0 {
+				txt.Text = versionHeaders[id.Col]
+				txt.TextStyle = fyne.TextStyle{Bold: true}
+				txt.Refresh()
+				return
+			}
+			txt.TextStyle = fyne.TextStyle{}
+
+			if len(versions) == 0 {
+				if id.Col == 0 {
+					txt.Text = ui.t("dbBrowseVersionNone")
+				} else {
+					txt.Text = ""
+				}
+				txt.Refresh()
+				return
+			}
+
+			v := versions[id.Row-1]
+			switch id.Col {
+			case 0:
+				txt.Text = strings.TrimSpace(v.RomType)
+				if txt.Text == "" {
+					txt.Text = "(unknown)"
+				}
+			case 1:
+				txt.Text = strings.TrimSpace(v.Version)
+				if txt.Text == "" {
+					txt.Text = "(n/a)"
+				}
+			case 2:
+				txt.Text = strings.TrimSpace(v.SHA1)
+				if txt.Text == "" {
+					txt.Text = "(n/a)"
+				}
+			case 3:
+				fs := strings.TrimSpace(v.FileSize)
+				if fs == "" || fs == "0" {
+					txt.Text = "—"
+				} else {
+					txt.Text = fs + " KB"
+				}
+			case 4:
+				txt.Text = strings.TrimSpace(v.Source)
+				if txt.Text == "" {
+					txt.Text = "(n/a)"
+				}
+			case 5:
+				txt.Text, txt.Color = boolCell(v.Active)
+			case 6:
+				txt.Text, txt.Color = boolCell(v.Preferred)
+			case 7:
+				txt.Text, txt.Color = boolCell(v.RomFound)
+			}
+			txt.Refresh()
+		},
+	)
+	versionTable.SetColumnWidth(0, 120)
+	versionTable.SetColumnWidth(1, 140)
+	versionTable.SetColumnWidth(2, 360)
+	versionTable.SetColumnWidth(3, 80)
+	versionTable.SetColumnWidth(4, 100)
+	versionTable.SetColumnWidth(5, 65)
+	versionTable.SetColumnWidth(6, 75)
+	versionTable.SetColumnWidth(7, 80)
+	versionTable.OnSelected = func(id widget.TableCellID) {
+		if id.Row <= 0 || len(versions) == 0 {
+			return
+		}
+		rowIndex := id.Row - 1
+		if rowIndex < 0 || rowIndex >= len(versions) {
+			return
+		}
+		sha1 := strings.TrimSpace(versions[rowIndex].SHA1)
+		if sha1 == "" {
+			ui.appendLog(statusWarn, "DB", ui.t("dbBrowseSHA1Empty"))
+			return
+		}
+		ui.window.Clipboard().SetContent(sha1)
+		ui.appendLog(statusInfo, "DB", fmt.Sprintf("%s: %s", ui.t("dbBrowseSHA1Copied"), sha1))
+	}
+
+	split := container.NewVSplit(
+		container.NewPadded(container.NewVScroll(detailEntry)),
+		container.NewBorder(
+			widget.NewLabelWithStyle(ui.t("dbBrowseVersionsTitle"), fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+			nil, nil, nil,
+			container.NewVScroll(versionTable),
+		),
+	)
+	split.Offset = 0.58
+
+	body := container.NewBorder(
+		container.NewVBox(
+			widget.NewLabelWithStyle(ui.t("dbBrowseDetailsTitle"), fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+		),
+		nil, nil, nil,
+		split,
+	)
+
+	dlg := dialog.NewCustom(title, ui.t("aboutClose"), container.NewPadded(body), ui.window)
+	dlg.Resize(fyne.NewSize(980, 660))
+	dlg.Show()
+	ui.appendLog(statusInfo, "DB", fmt.Sprintf("Opened details for GameID=%d", row.GameID))
+}
+
+func compareYearValues(a, b string) int {
+	ai, aok := parseYearValue(a)
+	bi, bok := parseYearValue(b)
+	if aok && bok {
+		if ai < bi {
+			return -1
+		}
+		if ai > bi {
+			return 1
+		}
+		return 0
+	}
+	return strings.Compare(strings.ToLower(a), strings.ToLower(b))
+}
+
+// parseYearValue extracts a 4-digit year from a string like "1986" or "1987 (JP)".
+// Returns (year, true) on success, (0, false) otherwise.
+func parseYearValue(s string) (int, bool) {
+	s = strings.TrimSpace(s)
+	// Take the leading numeric portion only
+	end := 0
+	for end < len(s) && s[end] >= '0' && s[end] <= '9' {
+		end++
+	}
+	if end == 0 {
+		return 0, false
+	}
+	n, err := strconv.Atoi(s[:end])
+	if err != nil {
+		return 0, false
+	}
+	return n, true
 }
 
 func (ui *mainUI) showMSXRomDBUpdateView() {
@@ -802,6 +1324,51 @@ func (ui *mainUI) showFileHunterUpdateView() {
 		ui.appendLog(statusInfo, "DB", fmt.Sprintf("%s: %s, %s", ui.t("dbDownloadDone"), allFilesPath, shaPath))
 	})
 
+	importBtn := widget.NewButton(ui.t("fhImportButton"), func() {
+		allFilesPath := filepath.Join(".", "download", "allfiles.txt")
+		sha1Path := filepath.Join(".", "download", "sha1sums.txt")
+
+		if _, err := os.Stat(allFilesPath); err != nil {
+			ui.appendLog(statusError, "DB", ui.t("fhImportNoAllFiles"))
+			dialog.ShowError(fmt.Errorf("%s", ui.t("fhImportNoAllFiles")), ui.window)
+			return
+		}
+
+		ui.appendLog(statusInfo, "DB", ui.t("fhImportStarted"))
+		go func() {
+			logf := func(msg string) {
+				fyne.Do(func() { ui.appendLog(statusInfo, "FH", msg) })
+			}
+
+			n, err := ui.store.ImportFileHunterAllFiles(allFilesPath, logf)
+			if err != nil {
+				fyne.Do(func() {
+					ui.appendLog(statusError, "FH", fmt.Sprintf("%s: %v", ui.t("fhImportFailed"), err))
+					dialog.ShowError(err, ui.window)
+				})
+				return
+			}
+			fyne.Do(func() {
+				ui.appendLog(statusInfo, "FH", fmt.Sprintf("%s: %d arquivos", ui.t("fhImportDone"), n))
+			})
+
+			if _, statErr := os.Stat(sha1Path); statErr == nil {
+				m, err := ui.store.ImportFileHunterSHA1Sums(sha1Path, logf)
+				if err != nil {
+					fyne.Do(func() {
+						ui.appendLog(statusWarn, "FH", fmt.Sprintf("SHA1: %v", err))
+					})
+				} else {
+					fyne.Do(func() {
+						ui.appendLog(statusInfo, "FH", fmt.Sprintf("SHA1: %d atualizados", m))
+					})
+				}
+			} else {
+				fyne.Do(func() { ui.appendLog(statusWarn, "FH", ui.t("fhImportNoSHA1")) })
+			}
+		}()
+	})
+
 	content := container.NewVBox(
 		widget.NewLabelWithStyle(ui.t("dbSourceURL"), fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
 		urlLabel,
@@ -809,11 +1376,271 @@ func (ui *mainUI) showFileHunterUpdateView() {
 		widget.NewLabelWithStyle(ui.t("dbSourceSHAURL"), fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
 		shaLabel,
 		updateBtn,
+		widget.NewSeparator(),
+		importBtn,
 	)
 
 	ui.previewCard.Title = ui.t("menuUpdateFileHunter")
 	ui.previewCard.SetContent(container.NewPadded(content))
 	ui.previewCard.Refresh()
+}
+
+// showFileHunterBrowseView shows a browseable catalog of the File-Hunter archive.
+// Left panel: category navigation (breadcrumb + sub-category list).
+// Right panel: file table with name/ext/SHA1/path columns.
+func (ui *mainUI) showFileHunterBrowseView() {
+	ui.activeView = viewFileHunterBrowse
+
+	// ── Check imported data ───────────────────────────────────────────────────
+	if n := ui.store.CountFHFiles(); n == 0 {
+		noDataLabel := widget.NewLabel(ui.t("fhBrowseNoData"))
+		noDataLabel.Wrapping = fyne.TextWrapWord
+		ui.previewCard.Title = ui.t("fhBrowseTitle")
+		ui.previewCard.SetContent(container.NewPadded(noDataLabel))
+		ui.previewCard.Refresh()
+		return
+	}
+
+	// ── State ─────────────────────────────────────────────────────────────────
+	var pathFilter []string // current category path, e.g. ["Games", "MSX1"]
+	var categories []settingsdb.FHCategoryItem
+	var files []settingsdb.FHFileRow
+	var extensions []settingsdb.FHFileTypeItem
+
+	// ── Widgets ───────────────────────────────────────────────────────────────
+	resultLabel := widget.NewLabel(fmt.Sprintf(ui.t("fhBrowseResults"), 0))
+	searchEntry := widget.NewEntry()
+	searchEntry.SetPlaceHolder(ui.t("fhBrowseSearchLabel"))
+
+	extSelect := widget.NewSelect([]string{ui.t("fhBrowseExtAll")}, nil)
+	extSelect.Selected = ui.t("fhBrowseExtAll")
+
+	// Breadcrumb container (updated on each refresh)
+	breadcrumb := container.NewHBox()
+
+	// ── File table ────────────────────────────────────────────────────────────
+	fhHeaders := []string{
+		ui.t("fhBrowseColName"),
+		ui.t("fhBrowseColExt"),
+		ui.t("fhBrowseColSHA1"),
+		ui.t("fhBrowseColPath"),
+	}
+
+	fileTable := widget.NewTable(
+		func() (int, int) {
+			if len(files) == 0 {
+				return 2, len(fhHeaders)
+			}
+			return len(files) + 1, len(fhHeaders)
+		},
+		func() fyne.CanvasObject {
+			t := canvas.NewText("", color.Black)
+			t.TextSize = theme.TextSize()
+			return container.NewPadded(t)
+		},
+		func(id widget.TableCellID, obj fyne.CanvasObject) {
+			txt := obj.(*fyne.Container).Objects[0].(*canvas.Text)
+			txt.Color = theme.ForegroundColor()
+			txt.TextStyle = fyne.TextStyle{}
+
+			if id.Row == 0 {
+				txt.Text = fhHeaders[id.Col]
+				txt.TextStyle = fyne.TextStyle{Bold: true}
+				txt.Refresh()
+				return
+			}
+			if len(files) == 0 {
+				if id.Col == 0 {
+					txt.Text = ui.t("dbBrowseVersionNone")
+				} else {
+					txt.Text = ""
+				}
+				txt.Refresh()
+				return
+			}
+			row := files[id.Row-1]
+			switch id.Col {
+			case 0:
+				txt.Text = row.Name
+			case 1:
+				txt.Text = row.Extension
+			case 2:
+				if row.SHA1 != "" {
+					txt.Text = row.SHA1
+				} else {
+					txt.Text = "—"
+				}
+			case 3:
+				txt.Text = row.FullPath
+			}
+			txt.Refresh()
+		},
+	)
+	fileTable.SetColumnWidth(0, 280)
+	fileTable.SetColumnWidth(1, 50)
+	fileTable.SetColumnWidth(2, 360)
+	fileTable.SetColumnWidth(3, 520)
+
+	// Copy SHA1 on row select
+	fileTable.OnSelected = func(id widget.TableCellID) {
+		if id.Row <= 0 || len(files) == 0 {
+			return
+		}
+		idx := id.Row - 1
+		if idx < 0 || idx >= len(files) {
+			return
+		}
+		sha1 := strings.TrimSpace(files[idx].SHA1)
+		if sha1 == "" {
+			ui.appendLog(statusWarn, "FH", ui.t("fhBrowseSHA1Empty"))
+			return
+		}
+		ui.window.Clipboard().SetContent(sha1)
+		ui.appendLog(statusInfo, "FH", fmt.Sprintf("%s: %s", ui.t("fhBrowseSHA1Copied"), sha1))
+	}
+
+	// ── Category list ─────────────────────────────────────────────────────────
+	catList := widget.NewList(
+		func() int { return len(categories) },
+		func() fyne.CanvasObject { return widget.NewLabel("") },
+		func(id widget.ListItemID, obj fyne.CanvasObject) {
+			if id < len(categories) {
+				c := categories[id]
+				obj.(*widget.Label).SetText(fmt.Sprintf("%s  (%d)", c.Name, c.Count))
+			}
+		},
+	)
+
+	// ── Refresh function (called on every state change) ───────────────────────
+	var refresh func()
+	refresh = func() {
+		// Fetch categories at next level
+		cats, err := ui.store.ListFHCategories(pathFilter)
+		if err != nil {
+			ui.appendLog(statusError, "FH", fmt.Sprintf("categories: %v", err))
+			cats = nil
+		}
+		categories = cats
+		catList.Refresh()
+
+		// Update extension list
+		exts, err := ui.store.ListFHFileTypes(pathFilter)
+		if err != nil {
+			exts = nil
+		}
+		extensions = exts
+		extOpts := []string{ui.t("fhBrowseExtAll")}
+		for _, e := range extensions {
+			extOpts = append(extOpts, e.Extension)
+		}
+		prevExt := extSelect.Selected
+		extSelect.Options = extOpts
+		found := false
+		for _, o := range extOpts {
+			if o == prevExt {
+				found = true
+				break
+			}
+		}
+		if !found {
+			extSelect.SetSelected(ui.t("fhBrowseExtAll"))
+		} else {
+			extSelect.SetSelected(prevExt)
+		}
+
+		// Rebuild breadcrumb
+		breadcrumb.Objects = nil
+		allBtn := widget.NewHyperlink(ui.t("fhBrowsePathAll"), nil)
+		allBtn.OnTapped = func() {
+			pathFilter = nil
+			refresh()
+		}
+		breadcrumb.Add(allBtn)
+		for i, seg := range pathFilter {
+			i := i
+			seg := seg
+			breadcrumb.Add(widget.NewLabel(" › "))
+			segBtn := widget.NewHyperlink(seg, nil)
+			segBtn.OnTapped = func() {
+				pathFilter = pathFilter[:i+1]
+				refresh()
+			}
+			breadcrumb.Add(segBtn)
+		}
+		breadcrumb.Refresh()
+
+		// Fetch matching files
+		ext := extSelect.Selected
+		if ext == ui.t("fhBrowseExtAll") {
+			ext = ""
+		}
+		result, err := ui.store.SearchFHFiles(pathFilter, searchEntry.Text, ext, 500)
+		if err != nil {
+			ui.appendLog(statusError, "FH", fmt.Sprintf("search: %v", err))
+			result = nil
+		}
+		files = result
+		fileTable.Refresh()
+		resultLabel.SetText(fmt.Sprintf(ui.t("fhBrowseResults"), len(files)))
+	}
+
+	// Navigate into sub-category on list tap
+	catList.OnSelected = func(id widget.ListItemID) {
+		if id >= len(categories) {
+			return
+		}
+		pathFilter = append(pathFilter, categories[id].Name)
+		catList.UnselectAll()
+		refresh()
+	}
+
+	// Search button
+	searchBtn := widget.NewButton(ui.t("fhBrowseSearchBtn"), func() { refresh() })
+	searchEntry.OnSubmitted = func(_ string) { refresh() }
+
+	// Extension change triggers immediate refresh
+	extSelect.OnChanged = func(_ string) { refresh() }
+
+	// ── Layout ────────────────────────────────────────────────────────────────
+	topBar := container.NewBorder(nil, nil, nil, nil,
+		container.NewHBox(breadcrumb),
+	)
+
+	filterBar := container.NewBorder(nil, nil, nil,
+		container.NewHBox(
+			widget.NewLabel(ui.t("fhBrowseExtFilter")+":"),
+			extSelect,
+			searchBtn,
+			resultLabel,
+		),
+		searchEntry,
+	)
+
+	catPanel := container.NewBorder(
+		widget.NewLabelWithStyle(ui.t("fhBrowseCategoryLabel"), fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+		nil, nil, nil,
+		catList,
+	)
+
+	filePanel := container.NewVScroll(fileTable)
+
+	mainSplit := container.NewHSplit(catPanel, filePanel)
+	mainSplit.Offset = 0.22
+
+	body := container.NewBorder(
+		container.NewVBox(topBar, widget.NewSeparator(), filterBar, widget.NewSeparator()),
+		nil, nil, nil,
+		mainSplit,
+	)
+
+	ui.previewCard.Title = ui.t("fhBrowseTitle")
+	ui.previewCard.SetContent(container.NewPadded(body))
+	ui.previewCard.Refresh()
+
+	// Initial load in goroutine
+	go func() {
+		fyne.Do(func() { refresh() })
+	}()
 }
 
 func (ui *mainUI) showCleanDownloadsView() {
@@ -984,7 +1811,7 @@ func extractZipFlat(zipPath, destinationDir string) ([]string, error) {
 			continue
 		}
 
-		source, err := file.Open()
+		source, err := openZipEntry(file)
 		if err != nil {
 			return nil, fmt.Errorf("open zip entry %s: %w", file.Name, err)
 		}
@@ -1023,6 +1850,49 @@ func extractZipFlat(zipPath, destinationDir string) ([]string, error) {
 	}
 
 	return extracted, nil
+}
+
+func openZipEntry(file *zip.File) (io.ReadCloser, error) {
+	if file.Method == 14 {
+		raw, err := file.OpenRaw()
+		if err != nil {
+			return nil, err
+		}
+		return openZipLZMAReader(raw, file.UncompressedSize64)
+	}
+	return file.Open()
+}
+
+func openZipLZMAReader(raw io.Reader, uncompressedSize uint64) (io.ReadCloser, error) {
+	headerPrefix := make([]byte, 4)
+	if _, err := io.ReadFull(raw, headerPrefix); err != nil {
+		return nil, fmt.Errorf("read LZMA header prefix: %w", err)
+	}
+
+	propsLen := binary.LittleEndian.Uint16(headerPrefix[2:4])
+	if propsLen == 0 {
+		return nil, errors.New("invalid LZMA ZIP entry: missing properties")
+	}
+
+	props := make([]byte, propsLen)
+	if _, err := io.ReadFull(raw, props); err != nil {
+		return nil, fmt.Errorf("read LZMA properties: %w", err)
+	}
+	if len(props) != 5 {
+		return nil, fmt.Errorf("unsupported LZMA properties length: %d", len(props))
+	}
+
+	// Build a classic .lzma header (properties + uncompressed size) from ZIP-LZMA metadata.
+	lzmaHeader := make([]byte, lzma.HeaderLen)
+	copy(lzmaHeader[:5], props)
+	binary.LittleEndian.PutUint64(lzmaHeader[5:], uncompressedSize)
+
+	stream := io.MultiReader(bytes.NewReader(lzmaHeader), raw)
+	reader, err := lzma.NewReader(stream)
+	if err != nil {
+		return nil, fmt.Errorf("init LZMA decoder: %w", err)
+	}
+	return io.NopCloser(reader), nil
 }
 
 func (ui *mainUI) resolveURLSetting(key, fallback, label string) string {
@@ -1069,9 +1939,17 @@ func (ui *mainUI) buildMenu() *fyne.MainMenu {
 			ui.showMSXRomDBUpdateView()
 			ui.appendLog(statusInfo, "DB", "MSX RomDB update view opened")
 		}),
+		fyne.NewMenuItem(tr("menuBrowseMSXRomDB"), func() {
+			ui.showMSXRomDBBrowseView()
+			ui.appendLog(statusInfo, "DB", "MSX RomDB browse view opened")
+		}),
 		fyne.NewMenuItem(tr("menuUpdateFileHunter"), func() {
 			ui.showFileHunterUpdateView()
 			ui.appendLog(statusInfo, "DB", "File-Hunter update view opened")
+		}),
+		fyne.NewMenuItem(tr("menuBrowseFileHunter"), func() {
+			ui.showFileHunterBrowseView()
+			ui.appendLog(statusInfo, "DB", "File-Hunter browse view opened")
 		}),
 		fyne.NewMenuItem(tr("menuCleanDownloads"), func() {
 			ui.showCleanDownloadsView()
