@@ -39,9 +39,11 @@ const (
 	prefLanguage = "ui.language"
 	prefTheme    = "ui.theme"
 
-	maxLogLines         = 1500
-	browsePageSize      = 100
-	browseDebounceDelay = 300 * time.Millisecond
+	maxLogLines               = 1500
+	browsePageSize            = 100
+	browseDebounceDelay       = 300 * time.Millisecond
+	defaultFileHunterPageSize = 10
+	prefFileHunterPageSize    = "fh.pageSize"
 
 	viewCatalogPlaceholder = "catalog"
 	viewMSXRomDBUpdate     = "db.msxromdb"
@@ -228,6 +230,7 @@ var i18n = map[uiprefs.LanguageCode]map[string]string{
 		"fhBrowseSHA1Empty":           "This file has no SHA1",
 		"fhBrowseClearPath":           "← Back",
 		"fhBrowsePathAll":             "All",
+		"fhBrowsePageSizeLabel":       "Records per page",
 		"menuHelp":                    "Help",
 		"menuAbout":                   "About",
 		"language":                    "Language",
@@ -370,6 +373,7 @@ var i18n = map[uiprefs.LanguageCode]map[string]string{
 		"dbExtractStarted":       "Extrayendo archivo en download/ ...",
 		"dbExtractDone":          "Extracción completada",
 		"dbExtractFailed":        "Fallo al extraer archivo",
+		"fhBrowsePageSizeLabel":  "Registros por página",
 		"pagerPrev":              "Anterior",
 		"pagerNext":              "Siguiente",
 		"pagerCurrent":           "Página %d/%d",
@@ -434,6 +438,7 @@ var i18n = map[uiprefs.LanguageCode]map[string]string{
 		"dbExtractStarted":       "Bestand uitpakken naar download/ ...",
 		"dbExtractDone":          "Uitpakken voltooid",
 		"dbExtractFailed":        "Uitpakken mislukt",
+		"fhBrowsePageSizeLabel":  "Records per pagina",
 		"pagerPrev":              "Vorige",
 		"pagerNext":              "Volgende",
 		"pagerCurrent":           "Pagina %d/%d",
@@ -498,6 +503,7 @@ var i18n = map[uiprefs.LanguageCode]map[string]string{
 		"dbExtractStarted":       "Estrazione file in download/ ...",
 		"dbExtractDone":          "Estrazione completata",
 		"dbExtractFailed":        "Estrazione non riuscita",
+		"fhBrowsePageSizeLabel":  "Record per pagina",
 		"pagerPrev":              "Precedente",
 		"pagerNext":              "Successiva",
 		"pagerCurrent":           "Pagina %d/%d",
@@ -1550,9 +1556,12 @@ func (ui *mainUI) showFileHunterUpdateView() {
 // Right panel: file table with name/ext/SHA1/path columns.
 func (ui *mainUI) showFileHunterBrowseView() {
 	ui.activeView = viewFileHunterBrowse
+	ui.appendLog(statusInfo, "FH", "=== File Hunter Browse Starting ===")
 
 	// ── Check imported data ───────────────────────────────────────────────────
-	if n := ui.store.CountFHFiles(); n == 0 {
+	totalFHFiles := ui.store.CountFHFiles()
+	if totalFHFiles == 0 {
+		ui.appendLog(statusWarn, "FH", "No File Hunter data imported")
 		noDataLabel := widget.NewLabel(ui.t("fhBrowseNoData"))
 		noDataLabel.Wrapping = fyne.TextWrapWord
 		ui.previewCard.Title = ui.t("fhBrowseTitle")
@@ -1560,14 +1569,23 @@ func (ui *mainUI) showFileHunterBrowseView() {
 		ui.previewCard.Refresh()
 		return
 	}
+	ui.appendLog(statusInfo, "FH", fmt.Sprintf("File Hunter data ready: %d files total", totalFHFiles))
 
 	// ── State ─────────────────────────────────────────────────────────────────
 	var pathFilter []string // current category path, e.g. ["Games", "MSX1"]
 	var categories []settingsdb.FHCategoryItem
 	var files []settingsdb.FHFileRow
 	var extensions []settingsdb.FHFileTypeItem
+	totalMatches := 0
 	currentPage := 0
 	var searchDebounce *time.Timer
+
+	// Get stored page size preference or use default
+	pageSizeStr := ui.getSetting(prefFileHunterPageSize)
+	pageSize := defaultFileHunterPageSize
+	if ps, err := strconv.Atoi(pageSizeStr); err == nil && ps > 0 {
+		pageSize = ps
+	}
 
 	// ── Widgets ───────────────────────────────────────────────────────────────
 	resultLabel := widget.NewLabel(fmt.Sprintf(ui.t("fhBrowseResults"), 0))
@@ -1577,6 +1595,11 @@ func (ui *mainUI) showFileHunterBrowseView() {
 
 	extSelect := widget.NewSelect([]string{ui.t("fhBrowseExtAll")}, nil)
 	extSelect.Selected = ui.t("fhBrowseExtAll")
+
+	// Page size selector
+	pageSizeOptions := []string{"10", "20", "50", "100"}
+	pageSizeSelect := widget.NewSelect(pageSizeOptions, nil)
+	pageSizeSelect.SetSelected(strconv.Itoa(pageSize))
 
 	// Breadcrumb container (updated on each refresh)
 	breadcrumb := container.NewHBox()
@@ -1590,25 +1613,10 @@ func (ui *mainUI) showFileHunterBrowseView() {
 	}
 
 	totalPages := func() int {
-		if len(files) == 0 {
+		if totalMatches == 0 {
 			return 1
 		}
-		return (len(files)-1)/browsePageSize + 1
-	}
-	visibleFiles := func() []settingsdb.FHFileRow {
-		if len(files) == 0 {
-			return nil
-		}
-		start := currentPage * browsePageSize
-		if start >= len(files) {
-			start = 0
-			currentPage = 0
-		}
-		end := start + browsePageSize
-		if end > len(files) {
-			end = len(files)
-		}
-		return files[start:end]
+		return (totalMatches-1)/pageSize + 1
 	}
 
 	var fileTable *widget.Table
@@ -1650,7 +1658,7 @@ func (ui *mainUI) showFileHunterBrowseView() {
 			if len(files) == 0 {
 				return 2, len(fhHeaders)
 			}
-			return len(visibleFiles()) + 1, len(fhHeaders)
+			return len(files) + 1, len(fhHeaders)
 		},
 		func() fyne.CanvasObject {
 			t := canvas.NewText("", color.Black)
@@ -1677,13 +1685,12 @@ func (ui *mainUI) showFileHunterBrowseView() {
 				txt.Refresh()
 				return
 			}
-			vis := visibleFiles()
-			if id.Row-1 < 0 || id.Row-1 >= len(vis) {
+			if id.Row-1 < 0 || id.Row-1 >= len(files) {
 				txt.Text = ""
 				txt.Refresh()
 				return
 			}
-			row := vis[id.Row-1]
+			row := files[id.Row-1]
 			switch id.Col {
 			case 0:
 				txt.Text = row.Name
@@ -1711,12 +1718,11 @@ func (ui *mainUI) showFileHunterBrowseView() {
 		if id.Row <= 0 || len(files) == 0 {
 			return
 		}
-		vis := visibleFiles()
 		idx := id.Row - 1
-		if idx < 0 || idx >= len(vis) {
+		if idx < 0 || idx >= len(files) {
 			return
 		}
-		sha1 := strings.TrimSpace(vis[idx].SHA1)
+		sha1 := strings.TrimSpace(files[idx].SHA1)
 		if sha1 == "" {
 			ui.appendLog(statusWarn, "FH", ui.t("fhBrowseSHA1Empty"))
 			return
@@ -1740,19 +1746,37 @@ func (ui *mainUI) showFileHunterBrowseView() {
 	// ── Refresh function (called on every state change) ───────────────────────
 	var refresh func()
 	refresh = func() {
+		ui.appendLog(statusInfo, "FH", "[1/5] Extracting display filters...")
+		ui.setStatus(statusInfo, "FH: [1/5] Getting filters...")
+		ext := extSelect.Selected
+		if ext == ui.t("fhBrowseExtAll") {
+			ext = ""
+		}
+
 		// Fetch categories at next level
+		ui.appendLog(statusInfo, "FH", "[2/5] Loading category structure...")
+		ui.setStatus(statusInfo, "FH: [2/5] Loading categories...")
 		cats, err := ui.store.ListFHCategories(pathFilter)
 		if err != nil {
-			ui.appendLog(statusError, "FH", fmt.Sprintf("categories: %v", err))
+			ui.appendLog(statusError, "FH", fmt.Sprintf("[2/5] ERROR loading categories: %v", err))
+			ui.setStatus(statusError, fmt.Sprintf("FH: ERROR loading categories: %v", err))
 			cats = nil
+		} else {
+			ui.appendLog(statusInfo, "FH", fmt.Sprintf("[2/5] Categories loaded: %d items", len(cats)))
 		}
 		categories = cats
 		catList.Refresh()
 
 		// Update extension list
+		ui.appendLog(statusInfo, "FH", "[3/5] Loading file type extensions...")
+		ui.setStatus(statusInfo, "FH: [3/5] Loading file types...")
 		exts, err := ui.store.ListFHFileTypes(pathFilter)
 		if err != nil {
+			ui.appendLog(statusError, "FH", fmt.Sprintf("[3/5] ERROR loading file types: %v", err))
+			ui.setStatus(statusError, fmt.Sprintf("FH: ERROR loading file types: %v", err))
 			exts = nil
+		} else {
+			ui.appendLog(statusInfo, "FH", fmt.Sprintf("[3/5] File types loaded: %d extensions", len(exts)))
 		}
 		extensions = exts
 		extOpts := []string{ui.t("fhBrowseExtAll")}
@@ -1775,6 +1799,8 @@ func (ui *mainUI) showFileHunterBrowseView() {
 		}
 
 		// Rebuild breadcrumb
+		ui.appendLog(statusInfo, "FH", "[4/5] Building navigation breadcrumb...")
+		ui.setStatus(statusInfo, "FH: [4/5] Rebuilding breadcrumb...")
 		breadcrumb.Objects = nil
 		allBtn := widget.NewHyperlink(ui.t("fhBrowsePathAll"), nil)
 		allBtn.OnTapped = func() {
@@ -1794,21 +1820,57 @@ func (ui *mainUI) showFileHunterBrowseView() {
 			breadcrumb.Add(segBtn)
 		}
 		breadcrumb.Refresh()
+		ui.appendLog(statusInfo, "FH", fmt.Sprintf("[4/5] Breadcrumb ready (depth=%d)", len(pathFilter)))
 
-		// Fetch matching files
-		ext := extSelect.Selected
-		if ext == ui.t("fhBrowseExtAll") {
-			ext = ""
+		// Count filtered results
+		pathStr := "all"
+		if len(pathFilter) > 0 {
+			pathStr = strings.Join(pathFilter, "/")
 		}
-		result, err := ui.store.SearchFHFiles(pathFilter, searchEntry.Text, ext, 500)
+		nameQ := searchEntry.Text
+		if nameQ == "" {
+			nameQ = "(no filter)"
+		}
+		extQ := ext
+		if extQ == "" {
+			extQ = "(all)"
+		}
+		ui.appendLog(statusInfo, "FH", fmt.Sprintf("[5/5] SEARCH: path=%s, name=%s, ext=%s", pathStr, nameQ, extQ))
+		ui.setStatus(statusInfo, fmt.Sprintf("FH: [5/5] Counting results (path=%s, name=%s, ext=%s)...", pathStr, nameQ, extQ))
+		count, err := ui.store.CountFHFilesFiltered(pathFilter, searchEntry.Text, ext)
 		if err != nil {
-			ui.appendLog(statusError, "FH", fmt.Sprintf("search: %v", err))
+			ui.appendLog(statusError, "FH", fmt.Sprintf("[5/5] ERROR counting: %v", err))
+			ui.setStatus(statusError, fmt.Sprintf("FH: ERROR counting: %v", err))
+			count = 0
+		} else {
+			ui.appendLog(statusInfo, "FH", fmt.Sprintf("[5/5] Found %d matching records", count))
+		}
+		totalMatches = count
+		pages := totalPages()
+		if currentPage >= pages {
+			currentPage = pages - 1
+		}
+		if currentPage < 0 {
+			currentPage = 0
+		}
+
+		// Load page
+		offset := currentPage * pageSize
+		ui.appendLog(statusInfo, "FH", fmt.Sprintf("[6/6] Loading page (page=%d, size=%d, offset=%d, total=%d)...", currentPage+1, pageSize, offset, totalMatches))
+		ui.setStatus(statusInfo, fmt.Sprintf("FH: [6/6] Loading page %d of %d (limit=%d, offset=%d)...", currentPage+1, pages, pageSize, offset))
+		result, err := ui.store.SearchFHFiles(pathFilter, searchEntry.Text, ext, pageSize, offset)
+		if err != nil {
+			ui.appendLog(statusError, "FH", fmt.Sprintf("[6/6] ERROR loading page: %v", err))
+			ui.setStatus(statusError, fmt.Sprintf("FH: ERROR loading page: %v", err))
 			result = nil
+		} else {
+			ui.appendLog(statusInfo, "FH", fmt.Sprintf("[6/6] Page loaded: %d records displayed", len(result)))
 		}
 		files = result
-		currentPage = 0
-		resultLabel.SetText(fmt.Sprintf(ui.t("fhBrowseResults"), len(files)))
+		resultLabel.SetText(fmt.Sprintf(ui.t("fhBrowseResults"), totalMatches))
 		updatePagingUI()
+		ui.appendLog(statusInfo, "FH", fmt.Sprintf("[DONE] %d/%d results on page %d/%d", len(files), totalMatches, currentPage+1, pages))
+		ui.setStatus(statusInfo, fmt.Sprintf("FH: Ready (%d/%d results, page %d of %d)", len(files), totalMatches, currentPage+1, pages))
 	}
 
 	scheduleDebouncedRefresh := func() {
@@ -1832,19 +1894,20 @@ func (ui *mainUI) showFileHunterBrowseView() {
 		}
 		pathFilter = append(pathFilter, categories[id].Name)
 		catList.UnselectAll()
+		currentPage = 0
 		refresh()
 	}
 
 	prevPageBtn = widget.NewButton(ui.t("pagerPrev"), func() {
 		if currentPage > 0 {
 			currentPage--
-			updatePagingUI()
+			refresh()
 		}
 	})
 	nextPageBtn = widget.NewButton(ui.t("pagerNext"), func() {
 		if currentPage < totalPages()-1 {
 			currentPage++
-			updatePagingUI()
+			refresh()
 		}
 	})
 
@@ -1854,7 +1917,20 @@ func (ui *mainUI) showFileHunterBrowseView() {
 	searchEntry.OnChanged = func(string) { scheduleDebouncedRefresh() }
 
 	// Extension change triggers immediate refresh
-	extSelect.OnChanged = func(_ string) { refresh() }
+	extSelect.OnChanged = func(_ string) {
+		currentPage = 0
+		refresh()
+	}
+
+	// Page size change triggers reset and refresh
+	pageSizeSelect.OnChanged = func(s string) {
+		if newSize, err := strconv.Atoi(s); err == nil && newSize > 0 {
+			pageSize = newSize
+			ui.setSetting(prefFileHunterPageSize, s)
+			currentPage = 0
+			refresh()
+		}
+	}
 
 	// ── Layout ────────────────────────────────────────────────────────────────
 	topBar := container.NewBorder(nil, nil, nil, nil,
@@ -1865,6 +1941,8 @@ func (ui *mainUI) showFileHunterBrowseView() {
 		container.NewHBox(
 			widget.NewLabel(ui.t("fhBrowseExtFilter")+":"),
 			extSelect,
+			widget.NewLabel(ui.t("fhBrowsePageSizeLabel")+":"),
+			pageSizeSelect,
 			searchBtn,
 			prevPageBtn,
 			nextPageBtn,
@@ -1895,9 +1973,12 @@ func (ui *mainUI) showFileHunterBrowseView() {
 	ui.previewCard.SetContent(container.NewPadded(body))
 	ui.previewCard.Refresh()
 	updatePagingUI()
+	ui.appendLog(statusInfo, "FH", "UI components initialized, starting initial data load...")
+	ui.setStatus(statusInfo, "FH: Initializing browse...")
 
 	// Initial load in goroutine
 	go func() {
+		ui.appendLog(statusInfo, "FH", "Initial refresh started (in background goroutine)")
 		fyne.Do(func() { refresh() })
 	}()
 }

@@ -19510,6 +19510,7 @@ Games\MSX2\DSK\E.A.S.E. - Philips Desktop v1.1 (1988)(Philips)(M4)[a][mouse].zip
 Games\MSX2\DSK\E.A.S.E. - Philips Desktop v1.1 (1988)(Philips)(M4)[mouse].zip
 Games\MSX2\DSK\E.A.S.E. - Philips Desktop v1.4 (1988)(Philips)(M5)[mouse].zip
 Games\MSX2\DSK\E.A.S.E. v1.2 (1988)(Philips).zip
+Games\MSX2\DSK\Echoes of the Quiet World (2026)(meichnpp).zip
 Games\MSX2\DSK\Echoheart Explorer (2026)(meichnpp).zip
 Games\MSX2\DSK\Educatie Diversen (1987)(nl).zip
 Games\MSX2\DSK\Eggbert (1994)(Fony).zip
@@ -19770,6 +19771,8 @@ Games\MSX2\DSK\Fray - In Magical Adventure (demo) (1990)(Micro Cabin)(ja).zip
 Games\MSX2\DSK\Freddy Hardest in South Manhattan (1989)(Dinamic Software)(es).zip
 Games\MSX2\DSK\Fruta Prohibida (1988)(-)(fr).zip
 Games\MSX2\DSK\Fruta Prohibida (1988)(-)(fr)[a].zip
+Games\MSX2\DSK\Furasuto Man (1992)(Mint Soft)(ja)(Disk 1 of 2).zip
+Games\MSX2\DSK\Furasuto Man (1992)(Mint Soft)(ja)(Disk 2 of 2).zip
 Games\MSX2\DSK\Future Time Demo (1991)(Sander Soft).zip
 Games\MSX2\DSK\Gagdius (1989)(Limia Soft)(Disk 1 of 2).zip
 Games\MSX2\DSK\Gagdius (1989)(Limia Soft)(Disk 2 of 2).zip
@@ -21568,6 +21571,7 @@ Games\MSX2\DSK\Spring Warrior (2016)(Oniric).zip
 Games\MSX2\DSK\Squeek (1991)(Anma)[cr FreeSoft Club].zip
 Games\MSX2\DSK\Squelette, Le (1987)(Forum Micros)(es).zip
 Games\MSX2\DSK\Squelette, Le (1987)(Forum Micros)(es)[a].zip
+Games\MSX2\DSK\Stampeding 3D Sugoroku Takuji (1991)(Original Brain Keepers)(ja).zip
 Games\MSX2\DSK\Star Sand Story (1990)(D.O.)(ja)(Disk 1 of 6).zip
 Games\MSX2\DSK\Star Sand Story (1990)(D.O.)(ja)(Disk 2 of 6).zip
 Games\MSX2\DSK\Star Sand Story (1990)(D.O.)(ja)(Disk 3 of 6).zip
@@ -22459,6 +22463,7 @@ Games\MSX2\MSX-Binaries\draworl2.lzh
 Games\MSX2\MSX-Binaries\draworl3.lzh
 Games\MSX2\MSX-Binaries\druid.lzh
 Games\MSX2\MSX-Binaries\dungmist.lzh
+Games\MSX2\MSX-Binaries\Echoes of the Quiet World.zip
 Games\MSX2\MSX-Binaries\EchoheartExplorer.zip
 Games\MSX2\MSX-Binaries\egger.lzh
 Games\MSX2\MSX-Binaries\fairy.lzh
@@ -23326,6 +23331,7 @@ Games\MSX2\ROM\Princess Paloma's Rescue v1.1 - InfiniteMSX (2024).zip
 Games\MSX2\ROM\Princess Paloma's Rescue v1.2 - InfiniteMSX (2024).zip
 Games\MSX2\ROM\Princess Quest - Oscar Toledo Gutierrez (2012) [original] [3442].zip
 Games\MSX2\ROM\Pro Baseball Fan - Telenet Japan (1987) [GoodMSX] [1843].zip
+Games\MSX2\ROM\Professional Mahjong - Chatnoir (1985).zip
 Games\MSX2\ROM\Professional Mahjong Gokuh - Chatnoir (1988) [GoodMSX] [1846].zip
 Games\MSX2\ROM\Project A2 - Pony Canyon (1987) [1851].zip
 Games\MSX2\ROM\Project A2 - Pony Canyon (1987) [GoodMSX] [1849].zip
@@ -49671,7 +49677,8 @@ Programs\Financial Solution data diskette ve 3.0 Reg 5308.zip
 Programs\Financiële Administratie (1986)(CCS Nederland)(VG-8590).zip
 Programs\First Rate Music Hall 2021 Edition.zip
 Programs\Fistan v2.05 (1986)(Stark Texel).zip
-Programs\FM Auto Arranger CMP-01 - YAMAHA (1985) [736].zip
+Programs\FM Auto Arranger CMP-01 v1.01 - YAMAHA (1985).zip
+Programs\FM Auto Arranger CMP-01 v1.03 - YAMAHA (1985) [736].zip
 Programs\FM Music Composer - YAMAHA (1984) [Needs FM Sound Synthesizer Unit - No disk support] [YRM-101] [GoodMSX] [738].zip
 Programs\FM Music Composer - YAMAHA (1984) [Needs FM Sound Synthesizer Unit - No disk support] [YRM-104] [GoodMSX] [739].zip
 Programs\FM Music Composer - YAMAHA (1984) [YRM-101] [737].zip
@@ -57794,6 +57801,7 @@ Technical\Hans Otten\msxutils\turbo-r\romturbo.com
 Technical\Hans Otten\msxutils\turbo-r\romturbo.txt
 Technical\Hans Otten\nicemouse\remouse2.dsk
 Technical\Other\1 chip msx.zip
+Technical\Other\3.5inch Floppydisk Drive (Yamaha) (Japan) (FD03 1DD).zip
 Technical\Other\9918 internal signal names.pdf
 Technical\Other\AV_Mk.2.pdf
 Technical\Other\CPU Interface Document.pdf

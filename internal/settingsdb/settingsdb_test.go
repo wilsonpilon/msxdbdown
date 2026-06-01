@@ -645,3 +645,85 @@ INSERT INTO robust_test VALUES (3, 'three''s apostrophe');
 		t.Fatalf("expected 'semicolon ; in value', got %q", val4)
 	}
 }
+
+func TestFileHunterSearchRespectsImportOrderAndPagination(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "msxdbdown.db")
+	store, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	allFilesPath := filepath.Join(dir, "allfiles.txt")
+	content := strings.Join([]string{
+		"Games\\zeta.txt",
+		"Games\\alpha.txt",
+		"Tools\\mu.txt",
+		"Tools\\beta.txt",
+		"Demo\\gamma.txt",
+		"Demo\\delta.txt",
+		"Utils\\epsilon.txt",
+		"Utils\\eta.txt",
+		"Music\\theta.txt",
+		"Music\\iota.txt",
+		"Docs\\kappa.txt",
+		"Docs\\lambda.txt",
+	}, "\n")
+	if err := os.WriteFile(allFilesPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write allfiles: %v", err)
+	}
+
+	inserted, err := store.ImportFileHunterAllFiles(allFilesPath, nil)
+	if err != nil {
+		t.Fatalf("import allfiles: %v", err)
+	}
+	if inserted != 12 {
+		t.Fatalf("expected 12 imported files, got %d", inserted)
+	}
+
+	if got := store.CountFHFiles(); got != 12 {
+		t.Fatalf("expected CountFHFiles=12, got %d", got)
+	}
+
+	page1, err := store.SearchFHFiles(nil, "", "", 5, 0)
+	if err != nil {
+		t.Fatalf("search page 1: %v", err)
+	}
+	if len(page1) != 5 {
+		t.Fatalf("expected 5 rows on page 1, got %d", len(page1))
+	}
+	want1 := []string{"zeta", "alpha", "mu", "beta", "gamma"}
+	for i, want := range want1 {
+		if page1[i].Name != want {
+			t.Fatalf("page1[%d]: expected %q, got %q", i, want, page1[i].Name)
+		}
+	}
+
+	page2, err := store.SearchFHFiles(nil, "", "", 5, 5)
+	if err != nil {
+		t.Fatalf("search page 2: %v", err)
+	}
+	if len(page2) != 5 {
+		t.Fatalf("expected 5 rows on page 2, got %d", len(page2))
+	}
+	want2 := []string{"delta", "epsilon", "eta", "theta", "iota"}
+	for i, want := range want2 {
+		if page2[i].Name != want {
+			t.Fatalf("page2[%d]: expected %q, got %q", i, want, page2[i].Name)
+		}
+	}
+
+	page3, err := store.SearchFHFiles(nil, "", "", 5, 10)
+	if err != nil {
+		t.Fatalf("search page 3: %v", err)
+	}
+	if len(page3) != 2 {
+		t.Fatalf("expected 2 rows on page 3, got %d", len(page3))
+	}
+	if page3[0].Name != "kappa" || page3[1].Name != "lambda" {
+		t.Fatalf("unexpected page 3 rows: %+v", page3)
+	}
+}

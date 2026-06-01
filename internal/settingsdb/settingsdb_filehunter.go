@@ -316,9 +316,31 @@ func (s *Store) CountFHFiles() int {
 	if s == nil || s.db == nil {
 		return 0
 	}
-	var n int
-	_ = s.db.QueryRow("SELECT COUNT(*) FROM fh_file").Scan(&n)
+	n, _ := s.CountFHFilesFiltered(nil, "", "")
 	return n
+}
+
+// CountFHFilesFiltered returns the number of files matching the given filters.
+func (s *Store) CountFHFilesFiltered(pathFilter []string, nameQuery, extension string) (int, error) {
+	if s == nil || s.db == nil {
+		return 0, errors.New("nil store")
+	}
+
+	where, args := buildFHFileFilters(pathFilter, nameQuery, extension)
+	query := fmt.Sprintf(`
+SELECT COUNT(*)
+FROM fh_file f
+LEFT JOIN fh_file_type ft ON ft.id = f.file_type_id
+%s`, where)
+
+	// Debug logging (commented for production)
+	// fmt.Fprintf(os.Stderr, "[DEBUG] CountFHFilesFiltered: %v\n", strings.TrimSpace(query))
+
+	var n int
+	if err := s.db.QueryRow(query, args...).Scan(&n); err != nil {
+		return 0, err
+	}
+	return n, nil
 }
 
 // ListFHCategories returns available category names at the next depth level
@@ -415,14 +437,51 @@ ORDER BY ft.extension COLLATE NOCASE`, subQ)
 }
 
 // SearchFHFiles returns files matching the given path filter, name pattern and/or extension.
-func (s *Store) SearchFHFiles(pathFilter []string, nameQuery, extension string, limit int) ([]FHFileRow, error) {
+// Results are ordered by import order (fh_file.id ascending).
+func (s *Store) SearchFHFiles(pathFilter []string, nameQuery, extension string, limit, offset int) ([]FHFileRow, error) {
 	if s == nil || s.db == nil {
 		return nil, errors.New("nil store")
 	}
 	if limit <= 0 {
 		limit = 500
 	}
+	if offset < 0 {
+		offset = 0
+	}
 
+	where, args := buildFHFileFilters(pathFilter, nameQuery, extension)
+
+	query := fmt.Sprintf(`
+SELECT f.id, f.name, f.full_path,
+       COALESCE(ft.extension, ''),
+       COALESCE(f.sha1, '')
+FROM fh_file f
+LEFT JOIN fh_file_type ft ON ft.id = f.file_type_id
+%s
+ORDER BY f.id ASC
+LIMIT ? OFFSET ?`, where)
+
+	args = append(args, limit)
+	args = append(args, offset)
+
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("search fh files: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var result []FHFileRow
+	for rows.Next() {
+		var row FHFileRow
+		if err := rows.Scan(&row.ID, &row.Name, &row.FullPath, &row.Extension, &row.SHA1); err != nil {
+			return nil, err
+		}
+		result = append(result, row)
+	}
+	return result, rows.Err()
+}
+
+func buildFHFileFilters(pathFilter []string, nameQuery, extension string) (string, []any) {
 	var conditions []string
 	var args []any
 
@@ -442,38 +501,10 @@ func (s *Store) SearchFHFiles(pathFilter []string, nameQuery, extension string, 
 		args = append(args, ext)
 	}
 
-	where := ""
-	if len(conditions) > 0 {
-		where = "WHERE " + strings.Join(conditions, " AND ")
+	if len(conditions) == 0 {
+		return "", args
 	}
-
-	query := fmt.Sprintf(`
-SELECT f.id, f.name, f.full_path,
-       COALESCE(ft.extension, ''),
-       COALESCE(f.sha1, '')
-FROM fh_file f
-LEFT JOIN fh_file_type ft ON ft.id = f.file_type_id
-%s
-ORDER BY f.name COLLATE NOCASE
-LIMIT ?`, where)
-
-	args = append(args, limit)
-
-	rows, err := s.db.Query(query, args...)
-	if err != nil {
-		return nil, fmt.Errorf("search fh files: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-
-	var result []FHFileRow
-	for rows.Next() {
-		var row FHFileRow
-		if err := rows.Scan(&row.ID, &row.Name, &row.FullPath, &row.Extension, &row.SHA1); err != nil {
-			return nil, err
-		}
-		result = append(result, row)
-	}
-	return result, rows.Err()
+	return "WHERE " + strings.Join(conditions, " AND "), args
 }
 
 // ─── Internal helpers ─────────────────────────────────────────────────────────
